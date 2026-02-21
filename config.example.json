@@ -1,0 +1,18 @@
+{
+  "api_key": "sk-change-me",
+
+  "models": {
+    "llama3": {
+      "backend": "127.0.0.1:8080",
+      "description": "Llama 3 70B (Q4_K_M)"
+    },
+    "codestral": {
+      "backend": "127.0.0.1:8081",
+      "description": "Codestral 22B (Q8_0)"
+    },
+    "embed": {
+      "backend": "127.0.0.1:8082",
+      "description": "Nomic Embed Text v1.5 (F16)"
+    }
+  }
+}
