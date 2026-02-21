@@ -46,6 +46,14 @@ class Handler(BaseHTTPRequestHandler):
                     "prompt_tokens": 1,
                     "completion_tokens": 10,
                     "total_tokens": 11
+                },
+                "timings": {
+                    "prompt_n": 1,
+                    "prompt_ms": 2.0,
+                    "prompt_per_second": 500.0,
+                    "predicted_n": 10,
+                    "predicted_ms": 100.0,
+                    "predicted_per_second": 100.0
                 }
             }
 

@@ -338,6 +338,74 @@ body {
 .view { display: none; }
 .view.active { display: block; }
 
+/* Chat */
+.chat-controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.chat-controls select, .chat-controls input {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    background: var(--bg-card);
+}
+.chat-controls select { flex: 1; min-width: 160px; }
+.chat-controls input { width: 100px; }
+.chat-prompt {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    resize: vertical;
+    min-height: 80px;
+    margin-bottom: 12px;
+}
+.chat-prompt:focus { border-color: var(--primary); }
+.chat-response {
+    display: none;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-top: 16px;
+    box-shadow: var(--shadow-sm);
+}
+.chat-response-text {
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+.chat-response-meta {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.chat-error {
+    display: none;
+    margin-top: 16px;
+    padding: 14px;
+    background: var(--error-bg);
+    border: 1px solid var(--error);
+    border-radius: var(--radius);
+    color: var(--error);
+    font-size: 13px;
+}
+
 /* Misc */
 .empty { text-align: center; padding: 48px 16px; color: var(--text-dim); }
 .spinner {
@@ -369,6 +437,7 @@ body {
     <button class="nav-link active" id="nav-models">Models</button>
     <button class="nav-link" id="nav-keys">API Keys</button>
     <button class="nav-link" id="nav-stats">Stats</button>
+    <button class="nav-link" id="nav-chat">Chat</button>
     <div class="nav-spacer"></div>
     <button class="nav-link" id="nav-logout" style="display:none">Logout</button>
 </nav>
@@ -417,6 +486,27 @@ body {
                 <button class="btn btn-danger btn-sm" id="btn-reset-stats">Reset</button>
             </div>
             <div id="stats-content"></div>
+        </div>
+    </div>
+
+    <!-- Chat view -->
+    <div class="view" id="view-chat">
+        <div class="container">
+            <div class="header-row">
+                <h2>Chat</h2>
+            </div>
+            <div class="chat-controls">
+                <select id="chat-model"></select>
+                <input id="chat-temp" type="number" step="0.1" min="0" max="2" value="0.7" placeholder="Temp">
+                <input id="chat-max-tokens" type="number" step="1" min="1" max="32768" value="256" placeholder="Max tokens">
+            </div>
+            <textarea class="chat-prompt" id="chat-prompt" placeholder="Type a prompt..." rows="3"></textarea>
+            <button class="btn btn-primary" id="btn-chat-send">Send</button>
+            <div class="chat-error" id="chat-error"></div>
+            <div class="chat-response" id="chat-response">
+                <div class="chat-response-text" id="chat-response-text"></div>
+                <div class="chat-response-meta" id="chat-response-meta"></div>
+            </div>
         </div>
     </div>
 </div>
@@ -516,11 +606,12 @@ $(function() {
         currentView = view;
         $('.view').removeClass('active');
         $('#view-' + view).addClass('active');
-        $('#nav-models, #nav-keys, #nav-stats').removeClass('active');
+        $('#nav-models, #nav-keys, #nav-stats, #nav-chat').removeClass('active');
         $('#nav-' + view).addClass('active');
         if (view === 'models') fetchModels();
         else if (view === 'keys') fetchKeys();
         else if (view === 'stats') fetchStats();
+        else if (view === 'chat') loadChatModels();
     }
 
     // ── Auth ──────────────────────────────────────
@@ -528,14 +619,14 @@ $(function() {
     function showAuth() {
         $('#auth-view').show();
         $('#dashboard').hide();
-        $('#nav-logout, #nav-models, #nav-keys, #nav-stats').hide();
+        $('#nav-logout, #nav-models, #nav-keys, #nav-stats, #nav-chat').hide();
         stopPolling();
     }
 
     function showDashboard() {
         $('#auth-view').hide();
         $('#dashboard').show();
-        $('#nav-logout, #nav-models, #nav-keys, #nav-stats').show();
+        $('#nav-logout, #nav-models, #nav-keys, #nav-stats, #nav-chat').show();
         switchView(currentView);
         startPolling();
     }
@@ -599,6 +690,7 @@ $(function() {
                 '<div class="card-backend"></div>' +
                 (m.description ? '<div class="card-desc"></div>' : '') +
                 '<div class="card-actions">' +
+                    '<button class="btn btn-primary btn-sm btn-chat-model">Chat</button>' +
                     '<button class="btn btn-outline btn-sm btn-edit">Edit</button>' +
                     '<button class="btn btn-danger btn-sm btn-del">Delete</button>' +
                 '</div>'
@@ -608,6 +700,9 @@ $(function() {
                 .html('<span class="spinner"></span>');
             $card.find('.card-backend').text(m.backend);
             if (m.description) $card.find('.card-desc').text(m.description);
+            $card.find('.btn-chat-model').on('click', function() {
+                openChatWithModel(name);
+            });
             $card.find('.btn-edit').on('click', function() {
                 openModelModal('edit', name, m.backend, m.description || '');
             });
@@ -818,7 +913,9 @@ $(function() {
                 '<th style="text-align:right">Requests</th>' +
                 '<th style="text-align:right">Tokens In</th>' +
                 '<th style="text-align:right">Tokens Out</th>' +
-                '<th style="text-align:right">Total Tokens</th>' +
+                '<th style="text-align:right">Total</th>' +
+                '<th style="text-align:right">Prompt tok/s</th>' +
+                '<th style="text-align:right">Gen tok/s</th>' +
                 '</tr></thead>'
             );
 
@@ -832,6 +929,8 @@ $(function() {
                 totals.prompt_tokens += s.prompt_tokens;
                 totals.completion_tokens += s.completion_tokens;
                 totals.total_tokens += s.total_tokens;
+                var pSpeed = s.avg_prompt_speed > 0 ? Math.round(s.avg_prompt_speed) : '-';
+                var cSpeed = s.avg_completion_speed > 0 ? Math.round(s.avg_completion_speed) : '-';
                 $tbody.append(
                     '<tr>' +
                     '<td>' + model + '</td>' +
@@ -839,6 +938,8 @@ $(function() {
                     '<td class="num">' + fmt(s.prompt_tokens) + '</td>' +
                     '<td class="num">' + fmt(s.completion_tokens) + '</td>' +
                     '<td class="num">' + fmt(s.total_tokens) + '</td>' +
+                    '<td class="num">' + pSpeed + '</td>' +
+                    '<td class="num">' + cSpeed + '</td>' +
                     '</tr>'
                 );
             });
@@ -851,6 +952,8 @@ $(function() {
                     '<td class="num">' + fmt(totals.prompt_tokens) + '</td>' +
                     '<td class="num">' + fmt(totals.completion_tokens) + '</td>' +
                     '<td class="num">' + fmt(totals.total_tokens) + '</td>' +
+                    '<td class="num"></td>' +
+                    '<td class="num"></td>' +
                     '</tr>'
                 );
             }
@@ -871,6 +974,90 @@ $(function() {
             .fail(function() {
                 toast('Failed to reset stats', 'error');
             });
+    }
+
+    // ── Chat ──────────────────────────────────────
+
+    function loadChatModels() {
+        api('GET', '/admin/api/models').done(function(data) {
+            var $sel = $('#chat-model').empty();
+            if (!data.models) return;
+            var names = Object.keys(data.models).sort();
+            $.each(names, function(_, name) {
+                $sel.append($('<option>').val(name).text(name + ' — ' + (data.models[name].description || data.models[name].backend)));
+            });
+        });
+    }
+
+    function openChatWithModel(modelName) {
+        switchView('chat');
+        // Set the model dropdown after models load
+        api('GET', '/admin/api/models').done(function(data) {
+            var $sel = $('#chat-model').empty();
+            if (!data.models) return;
+            var names = Object.keys(data.models).sort();
+            $.each(names, function(_, name) {
+                $sel.append($('<option>').val(name).text(name + ' — ' + (data.models[name].description || data.models[name].backend)));
+            });
+            $sel.val(modelName);
+            $('#chat-prompt').focus();
+        });
+    }
+
+    function sendChat() {
+        var model = $('#chat-model').val();
+        var prompt = $.trim($('#chat-prompt').val());
+        var temp = parseFloat($('#chat-temp').val()) || 0.7;
+        var maxTokens = parseInt($('#chat-max-tokens').val()) || 256;
+
+        if (!model) { toast('Select a model', 'error'); return; }
+        if (!prompt) { toast('Enter a prompt', 'error'); return; }
+
+        $('#btn-chat-send').prop('disabled', true).html('<span class="spinner"></span> Sending...');
+        $('#chat-response').hide();
+        $('#chat-error').hide();
+
+        var startTime = Date.now();
+
+        api('POST', '/admin/api/chat', {
+            model: model,
+            prompt: prompt,
+            temperature: temp,
+            max_tokens: maxTokens
+        }).done(function(data) {
+            var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+            if (data.choices && data.choices.length > 0) {
+                var msg = data.choices[0].message ? data.choices[0].message.content : '';
+                $('#chat-response-text').text(msg);
+
+                var meta = [];
+                if (data.timings) {
+                    if (data.timings.predicted_per_second)
+                        meta.push('Gen: ' + Math.round(data.timings.predicted_per_second) + ' tok/s');
+                    if (data.timings.prompt_per_second)
+                        meta.push('Prompt: ' + Math.round(data.timings.prompt_per_second) + ' tok/s');
+                }
+                if (data.usage) {
+                    meta.push('In: ' + (data.usage.prompt_tokens || 0));
+                    meta.push('Out: ' + (data.usage.completion_tokens || 0));
+                }
+                meta.push('Time: ' + elapsed + 's');
+                $('#chat-response-meta').text(meta.join('  |  '));
+                $('#chat-response').show();
+            } else if (data.error) {
+                $('#chat-error').text(data.error).show();
+            }
+        }).fail(function(xhr) {
+            var msg = 'Request failed';
+            try {
+                var r = JSON.parse(xhr.responseText);
+                msg = r.error || msg;
+            } catch(e) {}
+            $('#chat-error').text(msg).show();
+        }).always(function() {
+            $('#btn-chat-send').prop('disabled', false).text('Send');
+        });
     }
 
     // ── Reload ────────────────────────────────────
@@ -917,6 +1104,7 @@ $(function() {
     $('#nav-models').on('click', function() { switchView('models'); });
     $('#nav-keys').on('click', function() { switchView('keys'); });
     $('#nav-stats').on('click', function() { switchView('stats'); });
+    $('#nav-chat').on('click', function() { switchView('chat'); });
 
     // Model modal
     $('#btn-add-model').on('click', function() { openModelModal('add'); });
@@ -933,6 +1121,12 @@ $(function() {
 
     // Stats
     $('#btn-reset-stats').on('click', resetStats);
+
+    // Chat
+    $('#btn-chat-send').on('click', sendChat);
+    $('#chat-prompt').on('keydown', function(e) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendChat();
+    });
 
     $(document).on('keydown', function(e) {
         if (e.key === 'Escape') {

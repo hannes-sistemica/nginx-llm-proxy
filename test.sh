@@ -507,6 +507,8 @@ run_tests() {
         assert_contains "Stats include request count" "$resp" '"requests"'
         assert_contains "Stats include prompt tokens" "$resp" '"prompt_tokens"'
         assert_contains "Stats include total tokens" "$resp" '"total_tokens"'
+        assert_contains "Stats include avg prompt speed" "$resp" '"avg_prompt_speed"'
+        assert_contains "Stats include avg completion speed" "$resp" '"avg_completion_speed"'
 
         # Reset stats
         resp=$(curl_json -X DELETE "${BASE}/admin/api/stats" -H "X-Admin-Password: ${ADMIN_PW}")
@@ -515,6 +517,33 @@ run_tests() {
         # Verify stats are empty
         resp=$(curl_json "${BASE}/admin/api/stats" -H "X-Admin-Password: ${ADMIN_PW}")
         assert_not_contains "Stats empty after reset" "$resp" '"test-app"'
+
+        # ── Chat playground tests ─────────────────
+
+        echo ""
+        echo "Chat playground tests"
+        echo "--------------------------------------------"
+
+        # Chat with valid model
+        resp=$(curl_json -X POST "${BASE}/admin/api/chat" \
+            -H "X-Admin-Password: ${ADMIN_PW}" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"chat-model","prompt":"Hello"}')
+        assert_contains "POST /admin/api/chat returns response" "$resp" '"choices"'
+        assert_contains "POST /admin/api/chat returns timings" "$resp" '"timings"'
+
+        # Chat with unknown model
+        status=$(curl_status -X POST "${BASE}/admin/api/chat" \
+            -H "X-Admin-Password: ${ADMIN_PW}" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"nonexistent","prompt":"Hello"}')
+        assert_status "Chat with unknown model returns 404" "$status" "404"
+
+        # Chat without auth
+        status=$(curl_status -X POST "${BASE}/admin/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"chat-model","prompt":"Hello"}')
+        assert_status "Chat without auth returns 401" "$status" "401"
     fi
 
     echo ""

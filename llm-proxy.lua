@@ -253,6 +253,22 @@ function _M.log_usage()
     if usage.completion_tokens then
         dict:incr("ct|" .. key_name .. "|" .. model, usage.completion_tokens, 0)
     end
+
+    -- Extract token speed from timings (llama.cpp specific)
+    local timings_json = chunk:match('"timings"%s*:%s*(%b{})')
+    if not timings_json then return end
+
+    local timings = cjson.decode(timings_json)
+    if not timings then return end
+
+    if timings.prompt_per_second and timings.prompt_per_second > 0 then
+        dict:incr("pps_sum|" .. key_name .. "|" .. model, timings.prompt_per_second, 0)
+        dict:incr("pps_cnt|" .. key_name .. "|" .. model, 1, 0)
+    end
+    if timings.predicted_per_second and timings.predicted_per_second > 0 then
+        dict:incr("cps_sum|" .. key_name .. "|" .. model, timings.predicted_per_second, 0)
+        dict:incr("cps_cnt|" .. key_name .. "|" .. model, 1, 0)
+    end
 end
 
 -- ── Stats persistence ────────────────────────────
@@ -279,6 +295,18 @@ function _M.load_stats()
             end
             if s.completion_tokens and s.completion_tokens > 0 then
                 dict:set("ct|" .. key_name .. "|" .. model, s.completion_tokens)
+            end
+            if s.pps_sum and s.pps_sum > 0 then
+                dict:set("pps_sum|" .. key_name .. "|" .. model, s.pps_sum)
+            end
+            if s.pps_cnt and s.pps_cnt > 0 then
+                dict:set("pps_cnt|" .. key_name .. "|" .. model, s.pps_cnt)
+            end
+            if s.cps_sum and s.cps_sum > 0 then
+                dict:set("cps_sum|" .. key_name .. "|" .. model, s.cps_sum)
+            end
+            if s.cps_cnt and s.cps_cnt > 0 then
+                dict:set("cps_cnt|" .. key_name .. "|" .. model, s.cps_cnt)
             end
         end
     end
@@ -310,19 +338,24 @@ function _M.collect_stats(dict)
     local stats = {}
 
     for _, k in ipairs(keys) do
-        local prefix, key_name, model = k:match("^(%a+)|(.+)|([^|]+)$")
+        local prefix, key_name, model = k:match("^([%a_]+)|(.+)|([^|]+)$")
         if prefix and key_name and model then
             if not stats[key_name] then stats[key_name] = {} end
             if not stats[key_name][model] then
-                stats[key_name][model] = { requests = 0, prompt_tokens = 0, completion_tokens = 0 }
+                stats[key_name][model] = {
+                    requests = 0, prompt_tokens = 0, completion_tokens = 0,
+                    pps_sum = 0, pps_cnt = 0, cps_sum = 0, cps_cnt = 0
+                }
             end
             local val = dict:get(k) or 0
-            if prefix == "req" then
-                stats[key_name][model].requests = val
-            elseif prefix == "pt" then
-                stats[key_name][model].prompt_tokens = val
-            elseif prefix == "ct" then
-                stats[key_name][model].completion_tokens = val
+            local s = stats[key_name][model]
+            if prefix == "req" then s.requests = val
+            elseif prefix == "pt" then s.prompt_tokens = val
+            elseif prefix == "ct" then s.completion_tokens = val
+            elseif prefix == "pps_sum" then s.pps_sum = val
+            elseif prefix == "pps_cnt" then s.pps_cnt = val
+            elseif prefix == "cps_sum" then s.cps_sum = val
+            elseif prefix == "cps_cnt" then s.cps_cnt = val
             end
         end
     end
@@ -399,6 +432,8 @@ function _M.admin_api()
         _M.admin_api_keys()
     elseif uri == "/admin/api/stats" then
         _M.admin_api_stats()
+    elseif uri == "/admin/api/chat" then
+        _M.admin_api_chat()
     elseif uri == "/admin/api/health" then
         _M.admin_api_health()
     elseif uri == "/admin/api/reload" then
@@ -706,10 +741,12 @@ function _M.admin_api_stats()
 
     local stats = _M.collect_stats(dict)
 
-    -- Add total_tokens to each entry
+    -- Add computed fields to each entry
     for _, models in pairs(stats) do
         for _, s in pairs(models) do
             s.total_tokens = s.prompt_tokens + s.completion_tokens
+            s.avg_prompt_speed = s.pps_cnt > 0 and (s.pps_sum / s.pps_cnt) or 0
+            s.avg_completion_speed = s.cps_cnt > 0 and (s.cps_sum / s.cps_cnt) or 0
         end
     end
 
@@ -785,6 +822,113 @@ function _M.write_config()
         return false, "Cannot rename config: " .. (rename_err or "unknown")
     end
     return true
+end
+
+-- ── Chat playground ──────────────────────────────
+
+function _M.admin_api_chat()
+    ngx.header["Content-Type"] = "application/json"
+
+    if ngx.req.get_method() ~= "POST" then
+        ngx.status = 405
+        ngx.say('{"error":"Method not allowed"}')
+        return
+    end
+
+    ngx.req.read_body()
+    local body = ngx.req.get_body_data()
+    if not body then
+        ngx.status = 400
+        ngx.say('{"error":"Empty request body"}')
+        return
+    end
+
+    local data, err = cjson.decode(body)
+    if not data then
+        ngx.status = 400
+        ngx.say(cjson.encode({ error = "Invalid JSON: " .. (err or "") }))
+        return
+    end
+
+    local model = data.model
+    if not model or not config or not config.models or not config.models[model] then
+        ngx.status = 404
+        ngx.say(cjson.encode({ error = "Model not found", available = _M.list_models() }))
+        return
+    end
+
+    local backend = config.models[model].backend
+    local host, port = backend:match("^(.+):(%d+)$")
+    if not host or not port then
+        ngx.status = 500
+        ngx.say(cjson.encode({ error = "Invalid backend format" }))
+        return
+    end
+
+    -- Build chat completion payload
+    local payload = cjson.encode({
+        model = model,
+        messages = {{ role = "user", content = data.prompt or "" }},
+        max_tokens = data.max_tokens or 256,
+        temperature = data.temperature or 0.7
+    })
+
+    -- Connect to backend directly
+    local sock = ngx.socket.tcp()
+    sock:settimeout(60000)
+    local ok, conn_err = sock:connect(host, tonumber(port))
+    if not ok then
+        ngx.status = 502
+        ngx.say(cjson.encode({ error = "Backend connection failed: " .. (conn_err or "") }))
+        return
+    end
+
+    -- Send HTTP request
+    local req = "POST /v1/chat/completions HTTP/1.0\r\n"
+        .. "Host: " .. host .. "\r\n"
+        .. "Content-Type: application/json\r\n"
+        .. "Content-Length: " .. #payload .. "\r\n"
+        .. "Connection: close\r\n"
+        .. "\r\n"
+        .. payload
+
+    sock:send(req)
+
+    -- Read status line
+    local status_line = sock:receive("*l")
+    if not status_line then
+        sock:close()
+        ngx.status = 502
+        ngx.say('{"error":"No response from backend"}')
+        return
+    end
+
+    -- Read headers
+    local content_length = nil
+    while true do
+        local line = sock:receive("*l")
+        if not line or line == "" then break end
+        local cl = line:match("^[Cc]ontent%-[Ll]ength:%s*(%d+)")
+        if cl then content_length = tonumber(cl) end
+    end
+
+    -- Read body
+    local resp_body
+    if content_length then
+        resp_body = sock:receive(content_length)
+    else
+        resp_body = sock:receive("*a")
+    end
+    sock:close()
+
+    if not resp_body then
+        ngx.status = 502
+        ngx.say('{"error":"Empty response from backend"}')
+        return
+    end
+
+    -- Pass through the backend response
+    ngx.say(resp_body)
 end
 
 -- ── Health checking ───────────────────────────────
