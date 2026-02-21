@@ -2,7 +2,7 @@
 
 An nginx + Lua reverse proxy that routes OpenAI-compatible API requests to multiple llama-server instances. It reads the `model` field from each request body, looks up the backend from a JSON config file, and proxies the request through.
 
-Under 300 lines of Lua running inside nginx. No SDK rewriting your request body, no parameter injection, no framework to keep updated. The request hits nginx, gets routed, and the response comes back unchanged.
+Under 900 lines of Lua running inside nginx. No SDK rewriting your request body, no parameter injection, no framework to keep updated. The request hits nginx, gets routed, and the response comes back unchanged.
 
 ## Why this exists
 
