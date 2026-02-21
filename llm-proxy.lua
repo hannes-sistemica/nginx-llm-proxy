@@ -254,19 +254,32 @@ function _M.log_usage()
         dict:incr("ct|" .. key_name .. "|" .. model, usage.completion_tokens, 0)
     end
 
-    -- Extract token speed from timings (llama.cpp specific)
+    -- Extract token speed: prefer llama.cpp timings, fall back to elapsed time
     local timings_json = chunk:match('"timings"%s*:%s*(%b{})')
-    if not timings_json then return end
+    local pps, cps
 
-    local timings = cjson.decode(timings_json)
-    if not timings then return end
+    if timings_json then
+        local timings = cjson.decode(timings_json)
+        if timings then
+            pps = timings.prompt_per_second
+            cps = timings.predicted_per_second
+        end
+    end
 
-    if timings.prompt_per_second and timings.prompt_per_second > 0 then
-        dict:incr("pps_sum|" .. key_name .. "|" .. model, timings.prompt_per_second, 0)
+    -- Fallback: compute from token counts and request duration
+    if not cps or cps <= 0 then
+        local elapsed = tonumber(ngx.var.request_time) or 0
+        if elapsed > 0 and usage.completion_tokens and usage.completion_tokens > 0 then
+            cps = usage.completion_tokens / elapsed
+        end
+    end
+
+    if pps and pps > 0 then
+        dict:incr("pps_sum|" .. key_name .. "|" .. model, pps, 0)
         dict:incr("pps_cnt|" .. key_name .. "|" .. model, 1, 0)
     end
-    if timings.predicted_per_second and timings.predicted_per_second > 0 then
-        dict:incr("cps_sum|" .. key_name .. "|" .. model, timings.predicted_per_second, 0)
+    if cps and cps > 0 then
+        dict:incr("cps_sum|" .. key_name .. "|" .. model, cps, 0)
         dict:incr("cps_cnt|" .. key_name .. "|" .. model, 1, 0)
     end
 end
@@ -925,6 +938,41 @@ function _M.admin_api_chat()
         ngx.status = 502
         ngx.say('{"error":"Empty response from backend"}')
         return
+    end
+
+    -- Track usage stats from playground requests
+    local dict = ngx.shared.llm_stats
+    if dict then
+        local key_name = "_playground"
+        dict:incr("req|" .. key_name .. "|" .. model, 1, 0)
+
+        local usage_json = resp_body:match('"usage"%s*:%s*(%b{})')
+        if usage_json then
+            local usage = cjson.decode(usage_json)
+            if usage then
+                if usage.prompt_tokens then
+                    dict:incr("pt|" .. key_name .. "|" .. model, usage.prompt_tokens, 0)
+                end
+                if usage.completion_tokens then
+                    dict:incr("ct|" .. key_name .. "|" .. model, usage.completion_tokens, 0)
+                end
+            end
+        end
+
+        local timings_json = resp_body:match('"timings"%s*:%s*(%b{})')
+        if timings_json then
+            local timings = cjson.decode(timings_json)
+            if timings then
+                if timings.prompt_per_second and timings.prompt_per_second > 0 then
+                    dict:incr("pps_sum|" .. key_name .. "|" .. model, timings.prompt_per_second, 0)
+                    dict:incr("pps_cnt|" .. key_name .. "|" .. model, 1, 0)
+                end
+                if timings.predicted_per_second and timings.predicted_per_second > 0 then
+                    dict:incr("cps_sum|" .. key_name .. "|" .. model, timings.predicted_per_second, 0)
+                    dict:incr("cps_cnt|" .. key_name .. "|" .. model, 1, 0)
+                end
+            end
+        end
     end
 
     -- Pass through the backend response

@@ -419,6 +419,7 @@ body {
     vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.btn .spinner { margin-right: 6px; }
 
 @media (max-width: 600px) {
     .container { padding: 16px 12px; }
@@ -434,7 +435,7 @@ body {
 
 <nav class="navbar">
     <a class="nav-brand" href="/admin">LLM Proxy</a>
-    <button class="nav-link active" id="nav-models">Models</button>
+    <button class="nav-link" id="nav-models">Models</button>
     <button class="nav-link" id="nav-keys">API Keys</button>
     <button class="nav-link" id="nav-stats">Stats</button>
     <button class="nav-link" id="nav-chat">Chat</button>
@@ -454,7 +455,7 @@ body {
 
 <div id="dashboard" style="display:none">
     <!-- Models view -->
-    <div class="view active" id="view-models">
+    <div class="view" id="view-models">
         <div class="container">
             <div class="header-row">
                 <h2 id="model-count">Models</h2>
