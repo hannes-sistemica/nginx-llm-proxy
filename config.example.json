@@ -1,5 +1,8 @@
 {
-  "api_key": "sk-change-me",
+  "admin_password": "change-me",
+  "api_keys": {
+    "default": "sk-change-me"
+  },
 
   "models": {
     "llama3": {

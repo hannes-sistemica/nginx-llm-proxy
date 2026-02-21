@@ -10,8 +10,8 @@ test: ## Run integration tests with dummy backends
 
 install: ## Create config.json from example if missing
 	@test -f config.json || cp config.example.json config.json
-	@echo "1. Edit config.json with your models and API key"
-	@echo "2. Edit nginx.conf paths to point to this directory"
+	@echo "1. Edit config.json — set admin_password, api_keys, and models"
+	@echo "2. Edit nginx.conf — update paths to point to this directory"
 	@echo "3. sudo cp nginx.conf /etc/nginx/sites-enabled/llm-proxy"
 	@echo "4. sudo nginx -t && sudo nginx -s reload"
 
@@ -27,4 +27,4 @@ status: ## Show health and model list
 	@curl -s http://localhost:4000/health
 	@echo ""
 	@echo "Models:"
-	@curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $$(python3 -c "import json; print(json.load(open('config.json'))['api_key'])")" 2>/dev/null || echo "(configure config.json first)"
+	@curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $$(python3 -c "import json; c=json.load(open('config.json')); print(list(c.get('api_keys',{}).values())[0] if c.get('api_keys') else '')")" 2>/dev/null || echo "(configure config.json first)"

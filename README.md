@@ -2,7 +2,7 @@
 
 An nginx + Lua reverse proxy that routes OpenAI-compatible API requests to multiple llama-server instances. It reads the `model` field from each request body, looks up the backend from a JSON config file, and proxies the request through.
 
-Under 200 lines of Lua running inside nginx. No SDK rewriting your request body, no parameter injection, no framework to keep updated. The request hits nginx, gets routed, and the response comes back unchanged.
+Under 300 lines of Lua running inside nginx. No SDK rewriting your request body, no parameter injection, no framework to keep updated. The request hits nginx, gets routed, and the response comes back unchanged.
 
 ## Why this exists
 
@@ -15,12 +15,14 @@ llm-proxy does none of that. It authenticates the request, reads the model name,
 ## What it does
 
 - Routes requests by model name to different llama-server ports
-- API key authentication (Bearer token)
+- Multiple named API keys (one per app/client)
+- Separate admin password for the management UI
 - Works with any OpenAI-compatible endpoint: `/v1/chat/completions`, `/v1/embeddings`, `/v1/completions`
 - SSE streaming
 - Lists available models via `/v1/models`
-- Config lives in a JSON file, reloads on `nginx -s reload`
-- Admin endpoint to reload config without restarting nginx
+- Admin UI for models, API keys, and usage stats
+- Per-key usage tracking (requests, tokens in/out) persisted to disk
+- Config is a JSON file, reloads on `nginx -s reload`
 
 ## Requirements
 
@@ -43,11 +45,14 @@ cd nginx-llm-proxy
 cp config.example.json config.json
 ```
 
-Edit `config.json` with your models and API key:
+Edit `config.json`:
 
 ```json
 {
-  "api_key": "your-secret-key",
+  "admin_password": "your-admin-password",
+  "api_keys": {
+    "my-app": "sk-my-secret-key"
+  },
   "models": {
     "my-model": {
       "backend": "127.0.0.1:8080",
@@ -61,9 +66,7 @@ Edit `config.json` with your models and API key:
 }
 ```
 
-If you omit `api_key` or leave it empty, the proxy runs without authentication. A warning is logged at startup so you know it's open.
-
-Edit `nginx.conf` and update the two paths at the top to match your install directory. Then:
+Edit `nginx.conf` and update the paths at the top to match your install directory. Then:
 
 ```bash
 sudo cp nginx.conf /etc/nginx/sites-enabled/llm-proxy
@@ -73,61 +76,123 @@ sudo nginx -s reload
 
 The proxy is now running on port 4000.
 
+## Configuration
+
+### Admin password
+
+`admin_password` protects the admin UI and API. Set it to any string. If omitted or empty, the admin API is unprotected (a warning is logged at startup).
+
+```json
+{
+  "admin_password": "your-admin-password"
+}
+```
+
+### API keys
+
+`api_keys` is a map of name to key. Each name identifies which app or client uses that key. Apps authenticate with `Authorization: Bearer <key>`. If `api_keys` is omitted or empty, the proxy runs without authentication (a warning is logged).
+
+```json
+{
+  "api_keys": {
+    "claude-code": "sk-claude-abc123",
+    "obsidian": "sk-obsidian-def456",
+    "curl-testing": "sk-test-789"
+  }
+}
+```
+
+You can add keys through the admin UI, or directly in config.json:
+
+```bash
+# Edit config.json, add your key to the api_keys object, then reload:
+sudo nginx -s reload
+
+# Or reload without restarting nginx:
+curl http://localhost:4000/admin/reload
+```
+
+### Models
+
+Each model maps a name to a backend `host:port`. The name is what clients pass in the `model` field of their requests.
+
+```json
+{
+  "models": {
+    "qwen3-coder": {
+      "backend": "127.0.0.1:8080",
+      "description": "Qwen3 Coder 30B (Q4_K_M)"
+    },
+    "nomic-embed": {
+      "backend": "127.0.0.1:8084",
+      "description": "Nomic Embed Text v1.5 (F16)"
+    }
+  }
+}
+```
+
+Models can also be managed through the admin UI, or by editing config.json and reloading.
+
 ## Usage
 
 ```bash
 # Chat completion
 curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer sk-my-secret-key" \
   -d '{"model": "my-model", "messages": [{"role": "user", "content": "Hello"}]}'
 
 # Embeddings
 curl http://localhost:4000/v1/embeddings \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer sk-my-secret-key" \
   -d '{"model": "my-embed", "input": "some text to embed"}'
 
 # List models
 curl http://localhost:4000/v1/models \
-  -H "Authorization: Bearer your-secret-key"
+  -H "Authorization: Bearer sk-my-secret-key"
 
 # Health check (no auth)
 curl http://localhost:4000/health
 ```
 
-## Changing configuration
+## Admin UI
 
-Edit `config.json` and reload:
+Open `http://localhost:4000/admin` in a browser. Three tabs: Models (health status, add/edit/delete), API Keys (create/revoke, auto-generates `sk-<name>-<random>`), and Stats (per-key request and token counts).
+
+Restricted to localhost by default. For LAN access, uncomment the `allow` lines in `nginx.conf` and set your subnet. Admin operations require the admin password.
+
+## Reloading
 
 ```bash
-# Reload nginx (also reloads Lua modules)
+# Full reload (re-reads config, restores stats from disk)
 sudo nginx -s reload
 
-# Or reload config only, without restarting nginx (localhost only)
+# Config-only reload, no worker restart (localhost only)
 curl http://localhost:4000/admin/reload
 ```
 
-The `/admin/reload` endpoint is restricted to localhost by nginx `allow/deny` rules.
-
 ## Running tests
 
-The test suite starts dummy backends, configures a temporary nginx site, runs 17 integration tests, and cleans up after itself. Needs `sudo` for nginx config management:
+The test suite starts dummy backends, configures a temporary nginx site, runs integration tests, and cleans up after itself. Needs `sudo` for nginx config management:
 
 ```bash
 sudo make test
 ```
 
-Tests cover routing, authentication, error handling, body passthrough, and config reload.
+Tests cover routing, authentication, error handling, body passthrough, model CRUD, API key management, and usage stats.
 
 ## Files
 
 ```
-llm-proxy.lua          Routing logic (auth, JSON parse, backend lookup)
+llm-proxy.lua          Routing, auth, admin API, health checks, usage tracking
 nginx.conf             Nginx server block, edit paths before installing
+admin.html             Admin UI (self-contained HTML + CSS + JS)
+static/jquery.min.js   jQuery (served locally)
 config.example.json    Sample config, copy to config.json
 config.json            Your actual config (gitignored)
-test.sh                Integration test suite
+stats.json             Usage stats, auto-generated (gitignored)
+test.sh                Integration test suite (50 tests)
 test-backend.py        Dummy OpenAI-compatible server for tests
 Makefile               Shortcuts for test, install, reload, status
 ```
@@ -136,13 +201,15 @@ Makefile               Shortcuts for test, install, reload, status
 
 When a request arrives at nginx on port 4000:
 
-1. Lua reads the request body and parses the JSON
-2. It extracts the `model` field and looks it up in the config table
-3. It sets the `$backend` nginx variable to the matching `host:port`
-4. `proxy_pass $backend` forwards the request unchanged
-5. The response streams back to the client untouched
+1. Lua checks the Bearer token against the `api_keys` table
+2. It reads the request body and extracts the `model` field
+3. It looks up the backend in the config table
+4. It sets the `$backend` nginx variable to the matching `host:port`
+5. `proxy_pass $backend` forwards the request unchanged
+6. On the way back, it captures token usage from the response for stats
+7. The response streams back to the client untouched
 
-The config file is read once when nginx starts and cached in the Lua module table. Running `nginx -s reload` re-runs `init_by_lua`, which re-reads the file. The `/admin/reload` endpoint calls the same reload function without restarting workers.
+The config file is read once when nginx starts and cached in the Lua module table. Running `nginx -s reload` re-runs `init_by_lua`, which re-reads the file. Usage stats are kept in a shared memory zone across workers and flushed to `stats.json` every 30 seconds.
 
 ## License
 

@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Proxy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Varela+Round&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg: #ffffff;
+    --bg-surface: #f7f6f8;
+    --bg-card: #ffffff;
+    --bg-hover: rgba(0, 0, 0, 0.02);
+    --text: #1a1a2e;
+    --text-dim: #838383;
+    --text-secondary: #555;
+    --primary: hsl(217, 55%, 28%);
+    --primary-light: hsl(217, 55%, 95%);
+    --success: #00b894;
+    --success-bg: rgba(0, 184, 148, 0.08);
+    --warning: hsl(47.9, 95.8%, 53.1%);
+    --warning-bg: rgba(255, 193, 7, 0.08);
+    --error: hsl(0, 84.2%, 60.2%);
+    --error-bg: rgba(239, 83, 80, 0.06);
+    --border: #e2e2e2;
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    --radius: 7px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Varela Round', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-surface);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* Navbar */
+.navbar {
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    height: 56px;
+    background: var(--primary);
+    gap: 8px;
+}
+.nav-brand {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    text-decoration: none;
+    margin-right: 8px;
+}
+.nav-spacer { flex: 1; }
+.nav-link {
+    color: rgba(255,255,255,0.7);
+    text-decoration: none;
+    font-size: 14px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+    border: none;
+    background: none;
+}
+.nav-link:hover { color: #fff; background: rgba(255,255,255,0.1); }
+.nav-link.active { color: #fff; background: rgba(255,255,255,0.15); }
+
+/* Layout */
+.container {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px 16px;
+}
+.header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+.header-row h2 { font-size: 18px; }
+
+/* Cards */
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: var(--shadow-md); }
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.card-title { font-size: 16px; font-weight: 700; }
+.card-backend {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.card-desc { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
+.card-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* Key card */
+.key-value {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.key-value code {
+    background: var(--bg-surface);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    user-select: all;
+}
+.btn-copy {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-family: inherit;
+}
+.btn-copy:hover { border-color: var(--primary); color: var(--primary); }
+
+/* Stats table */
+.stats-section { margin-bottom: 24px; }
+.stats-section h3 {
+    font-size: 15px;
+    margin-bottom: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.stats-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.stats-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-dim);
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.stats-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--bg-surface);
+}
+.stats-table td:first-child { font-weight: 600; }
+.stats-table .num {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    text-align: right;
+}
+.stats-total td {
+    font-weight: 700;
+    border-top: 2px solid var(--border);
+    color: var(--primary);
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.badge-healthy { background: var(--success-bg); color: var(--success); }
+.badge-reachable { background: var(--warning-bg); color: #b8860b; }
+.badge-down { background: var(--error-bg); color: var(--error); }
+.badge-checking { background: var(--primary-light); color: var(--primary); }
+
+/* Buttons */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 18px;
+    border-radius: 20px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    min-height: 36px;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-primary:hover { opacity: 0.9; }
+.btn-outline { background: transparent; color: var(--primary); border-color: var(--border); }
+.btn-outline:hover { border-color: var(--primary); background: var(--primary-light); }
+.btn-danger { background: transparent; color: var(--error); border-color: var(--border); }
+.btn-danger:hover { border-color: var(--error); background: var(--error-bg); }
+.btn-sm { padding: 4px 12px; min-height: 30px; font-size: 12px; }
+
+/* Modal */
+.overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.3);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+}
+.overlay.active { display: flex; }
+.modal {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    width: 90%;
+    max-width: 440px;
+    padding: 24px;
+}
+.modal h3 { margin-bottom: 16px; font-size: 17px; }
+.form-group { margin-bottom: 14px; }
+.form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text-secondary);
+}
+.form-group input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.form-group input:focus { border-color: var(--primary); }
+.form-group input[readonly] { background: var(--bg-surface); color: var(--text-dim); }
+.form-hint { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+/* Generated key display */
+.generated-key {
+    display: none;
+    margin-top: 16px;
+    padding: 14px;
+    background: var(--success-bg);
+    border: 1px solid var(--success);
+    border-radius: var(--radius);
+}
+.generated-key p { font-size: 13px; font-weight: 600; color: var(--success); margin-bottom: 6px; }
+.generated-key code {
+    display: block;
+    font-size: 13px;
+    word-break: break-all;
+    user-select: all;
+    color: var(--text);
+}
+
+/* Auth gate */
+.auth-gate {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 56px);
+}
+.auth-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px;
+    width: 90%;
+    max-width: 380px;
+    box-shadow: var(--shadow-md);
+    text-align: center;
+}
+.auth-card h2 { margin-bottom: 8px; font-size: 20px; }
+.auth-card p { margin-bottom: 20px; color: var(--text-dim); font-size: 14px; }
+.auth-card input {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: center;
+    outline: none;
+    margin-bottom: 14px;
+}
+.auth-card input:focus { border-color: var(--primary); }
+.auth-error { color: var(--error); font-size: 13px; margin-bottom: 10px; display: none; }
+
+/* Toast */
+.toast-container {
+    position: fixed;
+    top: 68px;
+    right: 16px;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.toast {
+    padding: 10px 18px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: var(--shadow-md);
+    animation: toast-in 0.2s;
+    max-width: 320px;
+}
+.toast-success { background: var(--success); color: #fff; }
+.toast-error { background: var(--error); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+/* Views */
+.view { display: none; }
+.view.active { display: block; }
+
+/* Misc */
+.empty { text-align: center; padding: 48px 16px; color: var(--text-dim); }
+.spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+    .container { padding: 16px 12px; }
+    .card { padding: 14px 16px; }
+    .card-actions { flex-wrap: wrap; }
+    .modal { width: 95%; padding: 20px; }
+    .stats-table { font-size: 12px; }
+    .stats-table th, .stats-table td { padding: 6px 6px; }
+}
+</style>
+</head>
+<body>
+
+<nav class="navbar">
+    <a class="nav-brand" href="/admin">LLM Proxy</a>
+    <button class="nav-link active" id="nav-models">Models</button>
+    <button class="nav-link" id="nav-keys">API Keys</button>
+    <button class="nav-link" id="nav-stats">Stats</button>
+    <div class="nav-spacer"></div>
+    <button class="nav-link" id="nav-logout" style="display:none">Logout</button>
+</nav>
+
+<div id="auth-view" class="auth-gate" style="display:none">
+    <div class="auth-card">
+        <h2>LLM Proxy Admin</h2>
+        <p>Enter the admin password to continue.</p>
+        <div class="auth-error" id="auth-error">Invalid password</div>
+        <input type="password" id="auth-key" placeholder="Admin password" autocomplete="off">
+        <button class="btn btn-primary" style="width:100%" id="auth-submit">Login</button>
+    </div>
+</div>
+
+<div id="dashboard" style="display:none">
+    <!-- Models view -->
+    <div class="view active" id="view-models">
+        <div class="container">
+            <div class="header-row">
+                <h2 id="model-count">Models</h2>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-outline btn-sm" id="btn-reload">Reload</button>
+                    <button class="btn btn-primary btn-sm" id="btn-add-model">+ Add model</button>
+                </div>
+            </div>
+            <div id="model-list"></div>
+        </div>
+    </div>
+
+    <!-- API Keys view -->
+    <div class="view" id="view-keys">
+        <div class="container">
+            <div class="header-row">
+                <h2 id="key-count">API Keys</h2>
+                <button class="btn btn-primary btn-sm" id="btn-add-key">+ Add key</button>
+            </div>
+            <div id="key-list"></div>
+        </div>
+    </div>
+
+    <!-- Stats view -->
+    <div class="view" id="view-stats">
+        <div class="container">
+            <div class="header-row">
+                <h2>Usage Stats</h2>
+                <button class="btn btn-danger btn-sm" id="btn-reset-stats">Reset</button>
+            </div>
+            <div id="stats-content"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Model modal -->
+<div class="overlay" id="model-modal-overlay">
+    <div class="modal">
+        <h3 id="model-modal-title">Add model</h3>
+        <div class="form-group">
+            <label for="m-name">Name</label>
+            <input id="m-name" placeholder="my-model" autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label for="m-backend">Backend</label>
+            <input id="m-backend" placeholder="127.0.0.1:8080" autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label for="m-desc">Description</label>
+            <input id="m-desc" placeholder="Model name and quant (optional)" autocomplete="off">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" id="model-modal-cancel">Cancel</button>
+            <button class="btn btn-primary" id="model-modal-save">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Key modal -->
+<div class="overlay" id="key-modal-overlay">
+    <div class="modal">
+        <h3>Add API key</h3>
+        <div class="form-group">
+            <label for="k-name">Name</label>
+            <input id="k-name" placeholder="e.g. claude-code, obsidian" autocomplete="off">
+            <div class="form-hint">Identifies which app uses this key</div>
+        </div>
+        <div class="form-group">
+            <label for="k-key">Key (optional)</label>
+            <input id="k-key" placeholder="Leave blank to auto-generate" autocomplete="off">
+            <div class="form-hint">If left blank, a random key will be generated</div>
+        </div>
+        <div class="generated-key" id="generated-key-display">
+            <p>Key created — copy it now, it won't be shown again in full:</p>
+            <code id="generated-key-value"></code>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" id="key-modal-cancel">Cancel</button>
+            <button class="btn btn-primary" id="key-modal-save">Create</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script src="/admin/static/jquery.min.js"></script>
+<script>
+$(function() {
+    var adminPw = localStorage.getItem('llm-proxy-admin-pw');
+    var health = {};
+    var pollTimer = null;
+    var modelModalMode = null;
+    var currentView = 'models';
+
+    function fmt(n) {
+        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+        return n.toLocaleString();
+    }
+
+    // ── API helper ────────────────────────────────
+
+    function api(method, path, data) {
+        return $.ajax({
+            method: method,
+            url: path,
+            headers: adminPw ? { 'X-Admin-Password': adminPw } : {},
+            contentType: data ? 'application/json' : undefined,
+            data: data ? JSON.stringify(data) : undefined,
+            dataType: 'json',
+            statusCode: {
+                401: function() { logout(); }
+            }
+        });
+    }
+
+    // ── Toast ─────────────────────────────────────
+
+    function toast(msg, type) {
+        var $el = $('<div class="toast toast-' + (type || 'success') + '">').text(msg);
+        $('#toasts').append($el);
+        setTimeout(function() { $el.remove(); }, 3000);
+    }
+
+    // ── Nav tabs ──────────────────────────────────
+
+    function switchView(view) {
+        currentView = view;
+        $('.view').removeClass('active');
+        $('#view-' + view).addClass('active');
+        $('#nav-models, #nav-keys, #nav-stats').removeClass('active');
+        $('#nav-' + view).addClass('active');
+        if (view === 'models') fetchModels();
+        else if (view === 'keys') fetchKeys();
+        else if (view === 'stats') fetchStats();
+    }
+
+    // ── Auth ──────────────────────────────────────
+
+    function showAuth() {
+        $('#auth-view').show();
+        $('#dashboard').hide();
+        $('#nav-logout, #nav-models, #nav-keys, #nav-stats').hide();
+        stopPolling();
+    }
+
+    function showDashboard() {
+        $('#auth-view').hide();
+        $('#dashboard').show();
+        $('#nav-logout, #nav-models, #nav-keys, #nav-stats').show();
+        switchView(currentView);
+        startPolling();
+    }
+
+    function logout() {
+        adminPw = null;
+        localStorage.removeItem('llm-proxy-admin-pw');
+        showAuth();
+    }
+
+    function tryAuth(pw) {
+        adminPw = pw;
+        $.ajax({
+            url: '/admin/api/models',
+            headers: { 'X-Admin-Password': pw },
+            dataType: 'json'
+        }).done(function() {
+            localStorage.setItem('llm-proxy-admin-pw', pw);
+            $('#auth-error').hide();
+            showDashboard();
+        }).fail(function() {
+            adminPw = null;
+            $('#auth-error').show();
+        });
+    }
+
+    // ── Models ────────────────────────────────────
+
+    function fetchModels() {
+        api('GET', '/admin/api/models').done(function(data) {
+            renderModels(data.models, data.count);
+            fetchHealth();
+        });
+    }
+
+    function fetchHealth() {
+        api('GET', '/admin/api/health').done(function(data) {
+            health = data.backends || {};
+            updateHealthBadges();
+        });
+    }
+
+    function renderModels(models, count) {
+        $('#model-count').text('Models (' + count + ')');
+        var $list = $('#model-list').empty();
+
+        if (!models || count === 0) {
+            $list.html('<div class="empty">No models configured.</div>');
+            return;
+        }
+
+        var names = Object.keys(models).sort();
+        $.each(names, function(_, name) {
+            var m = models[name];
+            var $card = $('<div class="card">');
+            $card.html(
+                '<div class="card-header">' +
+                    '<span class="card-title"></span>' +
+                    '<span class="badge badge-checking" data-health-backend=""></span>' +
+                '</div>' +
+                '<div class="card-backend"></div>' +
+                (m.description ? '<div class="card-desc"></div>' : '') +
+                '<div class="card-actions">' +
+                    '<button class="btn btn-outline btn-sm btn-edit">Edit</button>' +
+                    '<button class="btn btn-danger btn-sm btn-del">Delete</button>' +
+                '</div>'
+            );
+            $card.find('.card-title').text(name);
+            $card.find('.badge').attr('data-health-backend', m.backend)
+                .html('<span class="spinner"></span>');
+            $card.find('.card-backend').text(m.backend);
+            if (m.description) $card.find('.card-desc').text(m.description);
+            $card.find('.btn-edit').on('click', function() {
+                openModelModal('edit', name, m.backend, m.description || '');
+            });
+            $card.find('.btn-del').on('click', function() {
+                deleteModel(name);
+            });
+            $list.append($card);
+        });
+    }
+
+    function updateHealthBadges() {
+        $('[data-health-backend]').each(function() {
+            var backend = $(this).attr('data-health-backend');
+            var h = health[backend];
+            if (!h) return;
+            $(this).attr('class', 'badge badge-' + h.status);
+            var label = h.status;
+            if (h.status === 'down' && h.error) label = 'down: ' + h.error;
+            $(this).text(label);
+        });
+    }
+
+    // ── Model modal ──────────────────────────────
+
+    function openModelModal(mode, name, backend, desc) {
+        modelModalMode = mode;
+        $('#model-modal-title').text(mode === 'add' ? 'Add model' : 'Edit model');
+        $('#m-name').val(name || '').prop('readonly', mode === 'edit');
+        $('#m-backend').val(backend || '');
+        $('#m-desc').val(desc || '');
+        $('#model-modal-overlay').addClass('active');
+        if (mode === 'add') $('#m-name').focus();
+        else $('#m-backend').focus();
+    }
+
+    function closeModelModal() {
+        $('#model-modal-overlay').removeClass('active');
+    }
+
+    function saveModelModal() {
+        var name = $.trim($('#m-name').val());
+        var backend = $.trim($('#m-backend').val());
+        var desc = $.trim($('#m-desc').val());
+
+        if (!name) { toast('Name is required', 'error'); return; }
+        if (!backend) { toast('Backend is required', 'error'); return; }
+
+        var method = modelModalMode === 'add' ? 'POST' : 'PUT';
+        api(method, '/admin/api/models', { name: name, backend: backend, description: desc })
+            .done(function(data) {
+                toast(data.message);
+                closeModelModal();
+                fetchModels();
+            })
+            .fail(function(xhr) {
+                var msg = 'Request failed';
+                try { msg = JSON.parse(xhr.responseText).error; } catch(e) {}
+                toast(msg, 'error');
+            });
+    }
+
+    function deleteModel(name) {
+        if (!confirm('Delete model "' + name + '"?')) return;
+        api('DELETE', '/admin/api/models', { name: name })
+            .done(function(data) {
+                toast(data.message);
+                fetchModels();
+            })
+            .fail(function(xhr) {
+                var msg = 'Request failed';
+                try { msg = JSON.parse(xhr.responseText).error; } catch(e) {}
+                toast(msg, 'error');
+            });
+    }
+
+    // ── API Keys ──────────────────────────────────
+
+    function fetchKeys() {
+        api('GET', '/admin/api/keys').done(function(data) {
+            renderKeys(data.keys, data.count);
+        });
+    }
+
+    function renderKeys(keys, count) {
+        $('#key-count').text('API Keys (' + count + ')');
+        var $list = $('#key-list').empty();
+
+        if (!keys || count === 0) {
+            $list.html('<div class="empty">No API keys configured. Proxy auth is disabled.</div>');
+            return;
+        }
+
+        $.each(keys, function(_, k) {
+            var $card = $('<div class="card">');
+            $card.html(
+                '<div class="card-header">' +
+                    '<span class="card-title"></span>' +
+                '</div>' +
+                '<div class="key-value">' +
+                    '<code class="key-preview"></code>' +
+                    '<button class="btn-copy" data-full-key="">Copy</button>' +
+                '</div>' +
+                '<div class="card-actions">' +
+                    '<button class="btn btn-danger btn-sm btn-del-key">Delete</button>' +
+                '</div>'
+            );
+            $card.find('.card-title').text(k.name);
+            $card.find('.key-preview').text(k.preview);
+            $card.find('.btn-copy').attr('data-full-key', k.key);
+            $card.find('.btn-del-key').on('click', function() {
+                deleteKey(k.name);
+            });
+            $list.append($card);
+        });
+
+        $list.find('.btn-copy').on('click', function() {
+            var key = $(this).attr('data-full-key');
+            var $btn = $(this);
+            navigator.clipboard.writeText(key).then(function() {
+                $btn.text('Copied!');
+                setTimeout(function() { $btn.text('Copy'); }, 1500);
+            });
+        });
+    }
+
+    // ── Key modal ─────────────────────────────────
+
+    function openKeyModal() {
+        $('#k-name').val('');
+        $('#k-key').val('');
+        $('#generated-key-display').hide();
+        $('#key-modal-save').show();
+        $('#key-modal-overlay').addClass('active');
+        $('#k-name').focus();
+    }
+
+    function closeKeyModal() {
+        $('#key-modal-overlay').removeClass('active');
+    }
+
+    function saveKeyModal() {
+        var name = $.trim($('#k-name').val());
+        var key = $.trim($('#k-key').val());
+
+        if (!name) { toast('Name is required', 'error'); return; }
+
+        var payload = { name: name };
+        if (key) payload.key = key;
+
+        api('POST', '/admin/api/keys', payload)
+            .done(function(data) {
+                toast(data.message);
+                if (data.key) {
+                    $('#generated-key-value').text(data.key);
+                    $('#generated-key-display').show();
+                    $('#key-modal-save').hide();
+                }
+                fetchKeys();
+            })
+            .fail(function(xhr) {
+                var msg = 'Request failed';
+                try { msg = JSON.parse(xhr.responseText).error; } catch(e) {}
+                toast(msg, 'error');
+            });
+    }
+
+    function deleteKey(name) {
+        if (!confirm('Delete API key "' + name + '"? Apps using this key will lose access.')) return;
+        api('DELETE', '/admin/api/keys', { name: name })
+            .done(function(data) {
+                toast(data.message);
+                fetchKeys();
+            })
+            .fail(function(xhr) {
+                var msg = 'Request failed';
+                try { msg = JSON.parse(xhr.responseText).error; } catch(e) {}
+                toast(msg, 'error');
+            });
+    }
+
+    // ── Stats ─────────────────────────────────────
+
+    function fetchStats() {
+        api('GET', '/admin/api/stats').done(function(data) {
+            renderStats(data.stats);
+        });
+    }
+
+    function renderStats(stats) {
+        var $content = $('#stats-content').empty();
+
+        if (!stats || $.isEmptyObject(stats)) {
+            $content.html('<div class="empty">No usage data yet.</div>');
+            return;
+        }
+
+        var keyNames = Object.keys(stats).sort();
+        $.each(keyNames, function(_, keyName) {
+            var models = stats[keyName];
+            var $section = $('<div class="stats-section">');
+            var label = keyName === '_anonymous' ? 'Anonymous (no key)' : keyName;
+            $section.append($('<h3>').text(label));
+
+            var $table = $('<table class="stats-table">');
+            $table.append(
+                '<thead><tr>' +
+                '<th>Model</th>' +
+                '<th style="text-align:right">Requests</th>' +
+                '<th style="text-align:right">Tokens In</th>' +
+                '<th style="text-align:right">Tokens Out</th>' +
+                '<th style="text-align:right">Total Tokens</th>' +
+                '</tr></thead>'
+            );
+
+            var $tbody = $('<tbody>');
+            var modelNames = Object.keys(models).sort();
+            var totals = { requests: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+            $.each(modelNames, function(_, model) {
+                var s = models[model];
+                totals.requests += s.requests;
+                totals.prompt_tokens += s.prompt_tokens;
+                totals.completion_tokens += s.completion_tokens;
+                totals.total_tokens += s.total_tokens;
+                $tbody.append(
+                    '<tr>' +
+                    '<td>' + model + '</td>' +
+                    '<td class="num">' + fmt(s.requests) + '</td>' +
+                    '<td class="num">' + fmt(s.prompt_tokens) + '</td>' +
+                    '<td class="num">' + fmt(s.completion_tokens) + '</td>' +
+                    '<td class="num">' + fmt(s.total_tokens) + '</td>' +
+                    '</tr>'
+                );
+            });
+
+            if (modelNames.length > 1) {
+                $tbody.append(
+                    '<tr class="stats-total">' +
+                    '<td>Total</td>' +
+                    '<td class="num">' + fmt(totals.requests) + '</td>' +
+                    '<td class="num">' + fmt(totals.prompt_tokens) + '</td>' +
+                    '<td class="num">' + fmt(totals.completion_tokens) + '</td>' +
+                    '<td class="num">' + fmt(totals.total_tokens) + '</td>' +
+                    '</tr>'
+                );
+            }
+
+            $table.append($tbody);
+            $section.append($table);
+            $content.append($section);
+        });
+    }
+
+    function resetStats() {
+        if (!confirm('Reset all usage stats? This cannot be undone.')) return;
+        api('DELETE', '/admin/api/stats')
+            .done(function() {
+                toast('Stats reset');
+                fetchStats();
+            })
+            .fail(function() {
+                toast('Failed to reset stats', 'error');
+            });
+    }
+
+    // ── Reload ────────────────────────────────────
+
+    function reloadConfig() {
+        api('POST', '/admin/api/reload').done(function() {
+            toast('Config reloaded');
+            if (currentView === 'models') fetchModels();
+            else if (currentView === 'keys') fetchKeys();
+        }).fail(function(xhr) {
+            var msg = 'Reload failed';
+            try { msg = JSON.parse(xhr.responseText).message; } catch(e) {}
+            toast(msg, 'error');
+        });
+    }
+
+    // ── Polling ───────────────────────────────────
+
+    function startPolling() {
+        stopPolling();
+        pollTimer = setInterval(function() {
+            if (currentView === 'models') fetchModels();
+            else if (currentView === 'keys') fetchKeys();
+            else if (currentView === 'stats') fetchStats();
+        }, 15000);
+    }
+    function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+    // ── Event handlers ────────────────────────────
+
+    $('#auth-submit').on('click', function() {
+        var pw = $.trim($('#auth-key').val());
+        if (pw) tryAuth(pw);
+    });
+
+    $('#auth-key').on('keydown', function(e) {
+        if (e.key === 'Enter') {
+            var pw = $.trim($(this).val());
+            if (pw) tryAuth(pw);
+        }
+    });
+
+    $('#nav-logout').on('click', logout);
+    $('#nav-models').on('click', function() { switchView('models'); });
+    $('#nav-keys').on('click', function() { switchView('keys'); });
+    $('#nav-stats').on('click', function() { switchView('stats'); });
+
+    // Model modal
+    $('#btn-add-model').on('click', function() { openModelModal('add'); });
+    $('#btn-reload').on('click', reloadConfig);
+    $('#model-modal-cancel').on('click', closeModelModal);
+    $('#model-modal-save').on('click', saveModelModal);
+    $('#model-modal-overlay').on('click', function(e) { if (e.target === this) closeModelModal(); });
+
+    // Key modal
+    $('#btn-add-key').on('click', openKeyModal);
+    $('#key-modal-cancel').on('click', closeKeyModal);
+    $('#key-modal-save').on('click', saveKeyModal);
+    $('#key-modal-overlay').on('click', function(e) { if (e.target === this) closeKeyModal(); });
+
+    // Stats
+    $('#btn-reset-stats').on('click', resetStats);
+
+    $(document).on('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeModelModal();
+            closeKeyModal();
+        }
+    });
+
+    // ── Init ──────────────────────────────────────
+
+    if (adminPw) showDashboard();
+    else showAuth();
+});
+</script>
+</body>
+</html>
