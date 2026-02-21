@@ -483,7 +483,10 @@ body {
         <div class="container">
             <div class="header-row">
                 <h2>Usage Stats</h2>
-                <button class="btn btn-danger btn-sm" id="btn-reset-stats">Reset</button>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-outline btn-sm" id="btn-refresh-stats">Refresh</button>
+                    <button class="btn btn-danger btn-sm" id="btn-reset-stats">Reset</button>
+                </div>
             </div>
             <div id="stats-content"></div>
         </div>
@@ -568,7 +571,7 @@ $(function() {
     var health = {};
     var pollTimer = null;
     var modelModalMode = null;
-    var currentView = 'models';
+    var currentView = localStorage.getItem('llm-proxy-tab') || 'models';
 
     function fmt(n) {
         if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
@@ -604,6 +607,7 @@ $(function() {
 
     function switchView(view) {
         currentView = view;
+        localStorage.setItem('llm-proxy-tab', view);
         $('.view').removeClass('active');
         $('#view-' + view).addClass('active');
         $('#nav-models, #nav-keys, #nav-stats, #nav-chat').removeClass('active');
@@ -991,6 +995,9 @@ $(function() {
 
     function openChatWithModel(modelName) {
         switchView('chat');
+        $('#chat-response').hide();
+        $('#chat-error').hide();
+        $('#chat-prompt').val('');
         // Set the model dropdown after models load
         api('GET', '/admin/api/models').done(function(data) {
             var $sel = $('#chat-model').empty();
@@ -1120,6 +1127,7 @@ $(function() {
     $('#key-modal-overlay').on('click', function(e) { if (e.target === this) closeKeyModal(); });
 
     // Stats
+    $('#btn-refresh-stats').on('click', fetchStats);
     $('#btn-reset-stats').on('click', resetStats);
 
     // Chat
