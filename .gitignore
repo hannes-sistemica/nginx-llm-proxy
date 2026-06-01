@@ -1,3 +1,4 @@
 config.json
 stats.json
 *.log
+.deploy.env
