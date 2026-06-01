@@ -12,6 +12,9 @@ NGINX_DST   ?= /etc/nginx/http.d/llm-proxy.conf
 SSH         ?= ssh -o ConnectTimeout=8
 SCP         ?= scp -q -o ConnectTimeout=8
 APP_FILES   = llm-proxy.lua admin.html config.example.json README.md test.sh test-backend.py
+RELOAD_WAIT ?= 30
+# Reload only once in-flight requests drain to 0 (waits up to RELOAD_WAIT s).
+SAFE_RELOAD = DEPLOY_HOST="$(DEPLOY_HOST)" PROXY_URL="$(PROXY_URL)" ADMIN_PASSWORD="$(ADMIN_PASSWORD)" RELOAD_WAIT="$(RELOAD_WAIT)" bash bin/safe-reload.sh
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -39,7 +42,7 @@ deploy: ## Push app files to the host + reload nginx (skips config.json/stats.js
 	@echo "→ deploying app files to $(DEPLOY_HOST):$(APP_DIR)"
 	$(SCP) $(APP_FILES) $(DEPLOY_HOST):$(APP_DIR)/
 	$(SCP) -r static $(DEPLOY_HOST):$(APP_DIR)/
-	@$(SSH) $(DEPLOY_HOST) 'nginx -t && nginx -s reload && echo "  nginx reloaded ✓"'
+	@$(SAFE_RELOAD)
 
 deploy-nginx: ## Render nginx.conf (inject WHISPER_API_KEY) + install + test + reload
 	@test -n "$(WHISPER_API_KEY)" || { echo "ERROR: WHISPER_API_KEY unset — create .deploy.env"; exit 1; }
@@ -48,7 +51,7 @@ deploy-nginx: ## Render nginx.conf (inject WHISPER_API_KEY) + install + test + r
 	@echo "→ installing $(NGINX_DST) on $(DEPLOY_HOST)"
 	$(SCP) /tmp/llm-proxy.conf.rendered $(DEPLOY_HOST):$(NGINX_DST)
 	@rm -f /tmp/llm-proxy.conf.rendered
-	@$(SSH) $(DEPLOY_HOST) 'nginx -t && nginx -s reload && echo "  nginx reloaded ✓"'
+	@$(SAFE_RELOAD)
 
 diff: ## Show drift between workdir and the live host (app files + nginx.conf)
 	@for f in llm-proxy.lua admin.html; do \
@@ -63,8 +66,8 @@ diff: ## Show drift between workdir and the live host (app files + nginx.conf)
 	if diff -q /tmp/ngx-host.conf /tmp/ngx-local.conf >/dev/null 2>&1; then echo "  in sync ✓"; else diff /tmp/ngx-host.conf /tmp/ngx-local.conf | head -40; fi; \
 	rm -f /tmp/ngx-local.conf /tmp/ngx-host.conf
 
-reload: ## Reload nginx on the host
-	@$(SSH) $(DEPLOY_HOST) 'nginx -t && nginx -s reload && echo "reloaded ✓"'
+reload: ## Reload nginx on the host (waits for in-flight to drain to 0)
+	@$(SAFE_RELOAD)
 
 status: ## Show host health + registered models
 	@echo "Health:"; curl -s $(PROXY_URL)/health; echo

@@ -5,6 +5,7 @@
   },
   "health_check_interval": 30,
   "default_max_concurrent": 1000000,
+  "sticky_ttl": 600,
 
   "models": {
     "llama3": {

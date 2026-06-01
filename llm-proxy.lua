@@ -153,12 +153,14 @@ end
 -- Resolve backend URL for a model config.
 -- Supports both legacy "backend" string and new "backends" array.
 -- Returns url string or nil + error message.
-function _M.resolve_backend(model_cfg, forced_backend_name)
+function _M.resolve_backend(model_cfg, forced_backend_name, sticky_key)
     -- New format: backends array with name + url
     if model_cfg.backends and #model_cfg.backends > 0 then
         local dict = ngx.shared.llm_stats
+        local default_cap = config and config.default_max_concurrent or 1e9
+        local sticky_ttl = config and config.sticky_ttl or 600
 
-        -- If client forced a specific backend via @name
+        -- Forced backend (@name): exact, bypasses health/capacity/stickiness.
         if forced_backend_name then
             for _, b in ipairs(model_cfg.backends) do
                 if b.name == forced_backend_name then
@@ -168,34 +170,68 @@ function _M.resolve_backend(model_cfg, forced_backend_name)
             return nil, "Backend '" .. forced_backend_name .. "' not found for this model"
         end
 
-        -- Capacity-aware selection. Walk in preference order; skip backends
-        -- marked down by health checks. Pick the first healthy backend that is
-        -- under its concurrency cap (max_concurrent). If every healthy backend
-        -- is saturated, fall back to the least-loaded one (let it queue rather
-        -- than hard-fail — vLLM/llama.cpp queue internally).
-        local default_cap = config and config.default_max_concurrent or 1e9
-        local healthy = nil   -- least-loaded healthy backend seen so far
-        for _, b in ipairs(model_cfg.backends) do
-            local status = dict and dict:get("health|" .. b.url)
-            if status ~= "down" then
-                local infl = (dict and dict:get("inflight|" .. b.url)) or 0
-                local cap = b.max_concurrent or default_cap
-                if infl < cap then
-                    return b.url, nil, b.name
-                end
-                if not healthy or infl < healthy.infl then
-                    healthy = { url = b.url, name = b.name, infl = infl }
+        -- Session stickiness: prefer the backend this session was pinned to
+        -- (KV/prefix-cache affinity), but YIELD if it's down or at capacity.
+        -- `home` keeps the pin across transient spills so the session returns
+        -- to its warm backend once it frees up.
+        local home = nil
+        if sticky_key and dict then
+            local pref = dict:get(sticky_key)
+            if pref then
+                for _, b in ipairs(model_cfg.backends) do
+                    if b.name == pref then
+                        home = pref  -- pin still names a real backend
+                        if dict:get("health|" .. b.url) ~= "down" then
+                            local infl = dict:get("inflight|" .. b.url) or 0
+                            local cap = b.max_concurrent or default_cap
+                            if infl < cap then
+                                dict:set(sticky_key, pref, sticky_ttl)  -- refresh
+                                ngx.ctx.sticky_state = "hit:" .. pref
+                                return b.url, nil, b.name
+                            end
+                        end
+                        break
+                    end
                 end
             end
         end
 
-        -- All healthy backends saturated → least-loaded healthy one.
-        if healthy then
-            return healthy.url, nil, healthy.name
+        -- Capacity-aware selection. Preference order; skip down backends; pick
+        -- the first healthy one under its concurrency cap; if every healthy
+        -- backend is saturated, fall back to the least-loaded (backends queue
+        -- internally rather than hard-fail).
+        local chosen_url, chosen_name
+        local least = nil
+        for _, b in ipairs(model_cfg.backends) do
+            if (dict and dict:get("health|" .. b.url)) ~= "down" then
+                local infl = (dict and dict:get("inflight|" .. b.url)) or 0
+                local cap = b.max_concurrent or default_cap
+                if infl < cap then
+                    chosen_url, chosen_name = b.url, b.name
+                    break
+                end
+                if not least or infl < least.infl then
+                    least = { url = b.url, name = b.name, infl = infl }
+                end
+            end
+        end
+        if not chosen_url and least then
+            chosen_url, chosen_name = least.url, least.name
+        end
+        if not chosen_url then
+            -- None healthy — try first anyway (health might be stale).
+            chosen_url, chosen_name = model_cfg.backends[1].url, model_cfg.backends[1].name
         end
 
-        -- None healthy — try first anyway (health might be stale).
-        return model_cfg.backends[1].url, nil, model_cfg.backends[1].name
+        -- Pin the session: keep an existing valid home (transient spill must
+        -- not move the session), otherwise pin a new session to where it landed.
+        if sticky_key and dict then
+            dict:set(sticky_key, home or chosen_name, sticky_ttl)
+            ngx.ctx.sticky_state = (home and ("yield:" .. home .. "->" .. chosen_name))
+                or ("new:" .. chosen_name)
+        end
+
+        return chosen_url, nil, chosen_name
     end
 
     -- Legacy format: single "backend" string
@@ -289,7 +325,16 @@ function _M.route()
     ngx.ctx.is_stream = data.stream and true or false
     local model_cfg = config.models[model_name]
 
-    local backend, resolve_err, backend_name = _M.resolve_backend(model_cfg, forced_backend)
+    -- Session stickiness key (per model + session). Forced @backend skips it.
+    local sticky_key = nil
+    if not forced_backend then
+        local session = ngx.req.get_headers()["X-Session-Id"]
+        if session and session ~= "" then
+            sticky_key = "sticky|" .. model_name .. "|" .. session
+        end
+    end
+
+    local backend, resolve_err, backend_name = _M.resolve_backend(model_cfg, forced_backend, sticky_key)
     if not backend then
         ngx.status = 502
         ngx.header["Content-Type"] = "application/json"
@@ -351,6 +396,7 @@ function _M.tag_response()
     if b then ngx.header["X-LLM-Backend"] = b end
     local m = ngx.ctx.model_name
     if m then ngx.header["X-LLM-Model"] = m end
+    if ngx.ctx.sticky_state then ngx.header["X-LLM-Sticky"] = ngx.ctx.sticky_state end
 end
 
 -- ── Usage tracking ───────────────────────────────
