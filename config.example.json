@@ -4,6 +4,7 @@
     "default": "sk-change-me"
   },
   "health_check_interval": 30,
+  "default_max_concurrent": 1000000,
 
   "models": {
     "llama3": {
@@ -12,10 +13,10 @@
     },
 
     "qwen-27b": {
-      "description": "Multi-backend with health-based failover. Backends are tried in order; any marked 'down' by the health check is skipped. First entry = preferred.",
+      "description": "Multi-backend, health-based failover + capacity-aware. Backends tried in order; skip any 'down'; pick the first healthy one under its max_concurrent; if all saturated, use the least-loaded. First entry = preferred.",
       "backend_model": "qwen-27b",
       "backends": [
-        { "name": "gpu-fast",  "url": "127.0.0.1:8082" },
+        { "name": "gpu-fast",  "url": "127.0.0.1:8082", "max_concurrent": 2 },
         { "name": "cpu-slow",  "url": "127.0.0.1:8083" }
       ]
     },

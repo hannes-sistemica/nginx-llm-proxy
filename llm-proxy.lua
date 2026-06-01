@@ -168,16 +168,33 @@ function _M.resolve_backend(model_cfg, forced_backend_name)
             return nil, "Backend '" .. forced_backend_name .. "' not found for this model"
         end
 
-        -- Try backends in order; skip those marked down by health checks
+        -- Capacity-aware selection. Walk in preference order; skip backends
+        -- marked down by health checks. Pick the first healthy backend that is
+        -- under its concurrency cap (max_concurrent). If every healthy backend
+        -- is saturated, fall back to the least-loaded one (let it queue rather
+        -- than hard-fail — vLLM/llama.cpp queue internally).
+        local default_cap = config and config.default_max_concurrent or 1e9
+        local healthy = nil   -- least-loaded healthy backend seen so far
         for _, b in ipairs(model_cfg.backends) do
-            local health_key = "health|" .. b.url
-            local status = dict and dict:get(health_key)
+            local status = dict and dict:get("health|" .. b.url)
             if status ~= "down" then
-                return b.url, nil, b.name
+                local infl = (dict and dict:get("inflight|" .. b.url)) or 0
+                local cap = b.max_concurrent or default_cap
+                if infl < cap then
+                    return b.url, nil, b.name
+                end
+                if not healthy or infl < healthy.infl then
+                    healthy = { url = b.url, name = b.name, infl = infl }
+                end
             end
         end
 
-        -- All marked down — try first anyway (health might be stale)
+        -- All healthy backends saturated → least-loaded healthy one.
+        if healthy then
+            return healthy.url, nil, healthy.name
+        end
+
+        -- None healthy — try first anyway (health might be stale).
         return model_cfg.backends[1].url, nil, model_cfg.backends[1].name
     end
 
@@ -289,6 +306,16 @@ function _M.route()
     ngx.ctx.backend_name = backend_name
     ngx.var.backend = "http://" .. backend
 
+    -- Capacity tracking: claim an in-flight slot for the chosen backend;
+    -- released in log_usage() when the request finishes (even on error).
+    do
+        local dict = ngx.shared.llm_stats
+        if dict then
+            dict:incr("inflight|" .. backend, 1, 0)
+            ngx.ctx.inflight_url = backend
+        end
+    end
+
     -- Rewrite model name in request body (strip @backend, apply backend_model)
     local rewritten = false
     if model_cfg.backend_model then
@@ -346,12 +373,21 @@ function _M.capture_response()
 end
 
 function _M.log_usage()
+    local dict = ngx.shared.llm_stats
+    if not dict then return end
+
+    -- Release the in-flight slot claimed at dispatch (runs for every finished
+    -- request, including errors). Guard against drift below zero.
+    local iu = ngx.ctx.inflight_url
+    if iu then
+        local n = dict:incr("inflight|" .. iu, -1)
+        if n and n < 0 then dict:set("inflight|" .. iu, 0) end
+        ngx.ctx.inflight_url = nil
+    end
+
     local key_name = ngx.ctx.api_key_name or "_anonymous"
     local model = ngx.ctx.model_name
     if not model then return end
-
-    local dict = ngx.shared.llm_stats
-    if not dict then return end
 
     -- Stats are keyed per model AND per backend that actually served the
     -- request (set by route()), so a virtual model split across backends
@@ -1259,6 +1295,12 @@ function _M.admin_api_health()
         else
             results[url] = { name = t.name, status = "down", error = "health check failed" }
         end
+    end
+
+    -- Annotate with current in-flight count (capacity signal).
+    for url, r in pairs(results) do
+        local n = dict and dict:get("inflight|" .. url) or 0
+        r.inflight = (n and n > 0) and n or 0
     end
 
     ngx.say(cjson.encode({ backends = results }))
