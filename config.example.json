@@ -3,18 +3,25 @@
   "api_keys": {
     "default": "sk-change-me"
   },
+  "health_check_interval": 30,
 
   "models": {
     "llama3": {
       "backend": "127.0.0.1:8080",
-      "description": "Llama 3 70B (Q4_K_M)"
+      "description": "Llama 3 70B (Q4_K_M) — legacy single-backend form"
     },
-    "codestral": {
-      "backend": "127.0.0.1:8081",
-      "description": "Codestral 22B (Q8_0)"
+
+    "qwen-27b": {
+      "description": "Multi-backend with health-based failover. Backends are tried in order; any marked 'down' by the health check is skipped. First entry = preferred.",
+      "backend_model": "qwen-27b",
+      "backends": [
+        { "name": "gpu-fast",  "url": "127.0.0.1:8082" },
+        { "name": "cpu-slow",  "url": "127.0.0.1:8083" }
+      ]
     },
+
     "embed": {
-      "backend": "127.0.0.1:8082",
+      "backend": "127.0.0.1:8084",
       "description": "Nomic Embed Text v1.5 (F16)"
     }
   }

@@ -311,6 +311,20 @@ function _M.route()
     end
 end
 
+-- ── Response tagging ──────────────────────────────
+
+-- Add headers identifying which backend actually served the request, for
+-- client-side stats/debugging. Runs in header_filter (before the body
+-- streams), reading values stashed by route(). Does NOT touch the body —
+-- the upstream's own "model" field is left as-is (normalize separately if a
+-- user-facing gateway needs the virtual name instead of the served name).
+function _M.tag_response()
+    local b = ngx.ctx.backend_name
+    if b then ngx.header["X-LLM-Backend"] = b end
+    local m = ngx.ctx.model_name
+    if m then ngx.header["X-LLM-Model"] = m end
+end
+
 -- ── Usage tracking ───────────────────────────────
 
 function _M.capture_response()
