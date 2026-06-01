@@ -33,6 +33,14 @@ function _M.init_worker()
         if premature then return end
         _M.save_stats()
     end)
+    -- Start periodic health checks
+    local interval = (config and config.health_check_interval) or 30
+    ngx.timer.every(interval, function(premature)
+        if premature then return end
+        _M.run_health_checks()
+    end)
+    -- Run initial health check after 2s
+    ngx.timer.at(2, function() _M.run_health_checks() end)
 end
 
 function _M.reload()
@@ -140,6 +148,47 @@ function _M.check_admin_auth()
     return ngx.exit(401)
 end
 
+-- ── Backend resolution ────────────────────────────
+
+-- Resolve backend URL for a model config.
+-- Supports both legacy "backend" string and new "backends" array.
+-- Returns url string or nil + error message.
+function _M.resolve_backend(model_cfg, forced_backend_name)
+    -- New format: backends array with name + url
+    if model_cfg.backends and #model_cfg.backends > 0 then
+        local dict = ngx.shared.llm_stats
+
+        -- If client forced a specific backend via @name
+        if forced_backend_name then
+            for _, b in ipairs(model_cfg.backends) do
+                if b.name == forced_backend_name then
+                    return b.url, nil, b.name
+                end
+            end
+            return nil, "Backend '" .. forced_backend_name .. "' not found for this model"
+        end
+
+        -- Try backends in order; skip those marked down by health checks
+        for _, b in ipairs(model_cfg.backends) do
+            local health_key = "health|" .. b.url
+            local status = dict and dict:get(health_key)
+            if status ~= "down" then
+                return b.url, nil, b.name
+            end
+        end
+
+        -- All marked down — try first anyway (health might be stale)
+        return model_cfg.backends[1].url, nil, model_cfg.backends[1].name
+    end
+
+    -- Legacy format: single "backend" string
+    if model_cfg.backend then
+        return model_cfg.backend, nil, nil
+    end
+
+    return nil, "No backend configured"
+end
+
 -- ── Routing ───────────────────────────────────────
 
 function _M.route()
@@ -198,12 +247,19 @@ function _M.route()
         return ngx.exit(400)
     end
 
-    if not config or not config.models or not config.models[model] then
+    -- Parse model@backend syntax
+    local model_name, forced_backend = model:match("^(.+)@(.+)$")
+    if not model_name then
+        model_name = model
+        forced_backend = nil
+    end
+
+    if not config or not config.models or not config.models[model_name] then
         ngx.status = 404
         ngx.header["Content-Type"] = "application/json"
         ngx.say(cjson.encode({
             error = {
-                message = "Model '" .. model .. "' not found. Available: " ..
+                message = "Model '" .. model_name .. "' not found. Available: " ..
                     _M.list_models(),
                 type = "invalid_request_error",
                 code = "404"
@@ -212,9 +268,47 @@ function _M.route()
         return ngx.exit(404)
     end
 
-    ngx.ctx.model_name = model
-    local backend = config.models[model].backend
+    ngx.ctx.model_name = model_name
+    local model_cfg = config.models[model_name]
+
+    local backend, resolve_err, backend_name = _M.resolve_backend(model_cfg, forced_backend)
+    if not backend then
+        ngx.status = 502
+        ngx.header["Content-Type"] = "application/json"
+        ngx.say(cjson.encode({
+            error = {
+                message = resolve_err or "No backend available",
+                type = "server_error",
+                code = "502"
+            }
+        }))
+        return ngx.exit(502)
+    end
+
+    ngx.ctx.backend_name = backend_name
     ngx.var.backend = "http://" .. backend
+
+    -- Rewrite model name in request body (strip @backend, apply backend_model)
+    local rewritten = false
+    if model_cfg.backend_model then
+        data.model = model_cfg.backend_model
+        rewritten = true
+    elseif forced_backend then
+        -- Strip @backend from model name sent to backend
+        data.model = model_name
+        rewritten = true
+    end
+    if rewritten then
+        ngx.req.set_body_data(cjson.encode(data))
+    end
+
+    -- Strip /v1 prefix for backends that don't use it (e.g. mlx-vlm)
+    if model_cfg.strip_v1 then
+        local uri = ngx.var.uri
+        if uri:sub(1, 3) == "/v1" then
+            ngx.req.set_uri(uri:sub(4))
+        end
+    end
 end
 
 -- ── Usage tracking ───────────────────────────────
@@ -393,13 +487,22 @@ function _M.models()
     local models = {}
     if config and config.models then
         for name, info in pairs(config.models) do
-            models[#models + 1] = {
+            local entry = {
                 id = name,
                 object = "model",
                 created = 0,
                 owned_by = "local",
                 description = info.description or ""
             }
+            -- Include backend names for @backend routing discovery
+            if info.backends and #info.backends > 0 then
+                local names = {}
+                for _, b in ipairs(info.backends) do
+                    names[#names + 1] = b.name
+                end
+                entry.backends = names
+            end
+            models[#models + 1] = entry
         end
     end
     table.sort(models, function(a, b) return a.id < b.id end)
@@ -475,10 +578,19 @@ function _M.admin_api_models()
         local models = {}
         if config and config.models then
             for name, info in pairs(config.models) do
-                models[name] = {
-                    backend = info.backend,
-                    description = info.description or ""
-                }
+                local entry = { description = info.description or "" }
+                if info.backends then
+                    entry.backends = info.backends
+                else
+                    entry.backend = info.backend
+                end
+                if info.backend_model then
+                    entry.backend_model = info.backend_model
+                end
+                if info.strip_v1 then
+                    entry.strip_v1 = info.strip_v1
+                end
+                models[name] = entry
             end
         end
         ngx.say(cjson.encode({ models = models, count = _M.count_models() }))
@@ -527,10 +639,7 @@ function _M.admin_add_model(data)
         return
     end
 
-    config.models[data.name] = {
-        backend = data.backend,
-        description = data.description or ""
-    }
+    config.models[data.name] = _M.build_model_entry(data)
 
     local wok, werr = _M.write_config()
     if not wok then
@@ -558,11 +667,8 @@ function _M.admin_update_model(data)
         return
     end
 
-    local old = { backend = config.models[data.name].backend, description = config.models[data.name].description }
-    config.models[data.name] = {
-        backend = data.backend,
-        description = data.description or ""
-    }
+    local old = config.models[data.name]
+    config.models[data.name] = _M.build_model_entry(data)
 
     local wok, werr = _M.write_config()
     if not wok then
@@ -766,22 +872,50 @@ function _M.admin_api_stats()
     ngx.say(cjson.encode({ stats = stats }))
 end
 
+-- ── Model entry builder ──────────────────────────
+
+function _M.build_model_entry(data)
+    local entry = { description = data.description or "" }
+    if data.backends and type(data.backends) == "table" and #data.backends > 0 then
+        entry.backends = data.backends
+    elseif data.backend then
+        entry.backend = data.backend
+    end
+    if data.backend_model then entry.backend_model = data.backend_model end
+    if data.strip_v1 then entry.strip_v1 = data.strip_v1 end
+    return entry
+end
+
 -- ── Validation ────────────────────────────────────
 
 function _M.validate_model(name, data)
     if not name or name == "" then
         return false, "Model name is required"
     end
-    if name:match("[%s/\\|]") then
-        return false, "Model name must not contain spaces, slashes, or pipes"
+    if name:match("[%s/\\|@]") then
+        return false, "Model name must not contain spaces, slashes, pipes, or @"
     end
-    if not data.backend or data.backend == "" then
-        return false, "Backend is required"
+    -- Accept either "backend" (legacy) or "backends" (new array format)
+    if data.backends and type(data.backends) == "table" and #data.backends > 0 then
+        for i, b in ipairs(data.backends) do
+            if not b.url or b.url == "" then
+                return false, "Backend #" .. i .. " missing url"
+            end
+            if not b.url:match("^[%w%.%-]+:%d+$") then
+                return false, "Backend #" .. i .. " url must be in host:port format"
+            end
+            if not b.name or b.name == "" then
+                return false, "Backend #" .. i .. " missing name"
+            end
+        end
+        return true
+    elseif data.backend and data.backend ~= "" then
+        if not data.backend:match("^[%w%.%-]+:%d+$") then
+            return false, "Backend must be in host:port format (e.g., 127.0.0.1:8080)"
+        end
+        return true
     end
-    if not data.backend:match("^[%w%.%-]+:%d+$") then
-        return false, "Backend must be in host:port format (e.g., 127.0.0.1:8080)"
-    end
-    return true
+    return false, "Backend is required (provide 'backend' or 'backends' array)"
 end
 
 -- ── Config persistence ────────────────────────────
@@ -864,14 +998,25 @@ function _M.admin_api_chat()
     end
 
     local model = data.model
-    if not model or not config or not config.models or not config.models[model] then
+    -- Parse model@backend for playground too
+    local model_name, forced_backend = model:match("^(.+)@(.+)$")
+    if not model_name then model_name = model end
+
+    if not config or not config.models or not config.models[model_name] then
         ngx.status = 404
         ngx.say(cjson.encode({ error = "Model not found", available = _M.list_models() }))
         return
     end
 
-    local backend = config.models[model].backend
-    local host, port = backend:match("^(.+):(%d+)$")
+    local model_cfg = config.models[model_name]
+    local backend_url, resolve_err = _M.resolve_backend(model_cfg, forced_backend)
+    if not backend_url then
+        ngx.status = 502
+        ngx.say(cjson.encode({ error = resolve_err or "No backend available" }))
+        return
+    end
+
+    local host, port = backend_url:match("^(.+):(%d+)$")
     if not host or not port then
         ngx.status = 500
         ngx.say(cjson.encode({ error = "Invalid backend format" }))
@@ -983,7 +1128,7 @@ end
 
 function _M.check_backend_health(host, port)
     local sock = ngx.socket.tcp()
-    sock:settimeout(2000)
+    sock:settimeout(3000)
     local ok, err = sock:connect(host, port)
     if not ok then
         return { status = "down", error = err }
@@ -1001,33 +1146,74 @@ function _M.check_backend_health(host, port)
     end
 end
 
+-- Collect all unique backend URLs from config (supports both formats)
+function _M.collect_all_backends()
+    local backends = {}
+    if not config or not config.models then return backends end
+    for _, info in pairs(config.models) do
+        if info.backends then
+            for _, b in ipairs(info.backends) do
+                backends[b.url] = b.name or b.url
+            end
+        elseif info.backend then
+            backends[info.backend] = info.backend
+        end
+    end
+    return backends
+end
+
+-- Periodic health check — updates shared dict with status per backend URL
+function _M.run_health_checks()
+    local dict = ngx.shared.llm_stats
+    if not dict then return end
+
+    local backends = _M.collect_all_backends()
+    local threads = {}
+
+    for url, _ in pairs(backends) do
+        local host, port = url:match("^(.+):(%d+)$")
+        if host and port then
+            threads[url] = ngx.thread.spawn(_M.check_backend_health, host, tonumber(port))
+        end
+    end
+
+    for url, thread in pairs(threads) do
+        local ok, res = ngx.thread.wait(thread)
+        local health_key = "health|" .. url
+        if ok and res and res.status == "healthy" then
+            dict:set(health_key, "healthy", 90)  -- TTL 90s (3x interval)
+        elseif ok and res and res.status == "reachable" then
+            dict:set(health_key, "reachable", 90)
+        else
+            dict:set(health_key, "down", 90)
+        end
+    end
+end
+
 function _M.admin_api_health()
     ngx.header["Content-Type"] = "application/json"
 
-    local backends = {}
-    if config and config.models then
-        for _, info in pairs(config.models) do
-            backends[info.backend] = true
-        end
-    end
+    local backends = _M.collect_all_backends()
+    local dict = ngx.shared.llm_stats
 
     local results = {}
     local threads = {}
-    for backend in pairs(backends) do
-        local host, port = backend:match("^(.+):(%d+)$")
+    for url, name in pairs(backends) do
+        local host, port = url:match("^(.+):(%d+)$")
         if host and port then
-            threads[backend] = ngx.thread.spawn(_M.check_backend_health, host, tonumber(port))
+            threads[url] = { name = name, thread = ngx.thread.spawn(_M.check_backend_health, host, tonumber(port)) }
         else
-            results[backend] = { status = "down", error = "invalid backend format" }
+            results[url] = { name = name, status = "down", error = "invalid backend format" }
         end
     end
 
-    for backend, thread in pairs(threads) do
-        local ok, res = ngx.thread.wait(thread)
+    for url, t in pairs(threads) do
+        local ok, res = ngx.thread.wait(t.thread)
         if ok and res then
-            results[backend] = res
+            res.name = t.name
+            results[url] = res
         else
-            results[backend] = { status = "down", error = "health check failed" }
+            results[url] = { name = t.name, status = "down", error = "health check failed" }
         end
     end
 
