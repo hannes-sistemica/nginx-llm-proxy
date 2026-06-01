@@ -269,6 +269,7 @@ function _M.route()
     end
 
     ngx.ctx.model_name = model_name
+    ngx.ctx.is_stream = data.stream and true or false
     local model_cfg = config.models[model_name]
 
     local backend, resolve_err, backend_name = _M.resolve_backend(model_cfg, forced_backend)
@@ -329,8 +330,18 @@ end
 
 function _M.capture_response()
     local chunk = ngx.arg[1]
-    if chunk and #chunk > 0 and chunk:find('"total_tokens"') then
-        ngx.ctx.usage_chunk = chunk
+    if chunk and #chunk > 0 then
+        -- Wall-clock of first→last output chunk = decode time for streamed
+        -- responses (used as the speed source when the backend reports no
+        -- llama.cpp timings, e.g. vLLM). ngx.now() is request-cached, so
+        -- refresh it explicitly each chunk.
+        ngx.update_time()
+        local now = ngx.now()
+        if not ngx.ctx.gen_first then ngx.ctx.gen_first = now end
+        ngx.ctx.gen_last = now
+        if chunk:find('"total_tokens"') then
+            ngx.ctx.usage_chunk = chunk
+        end
     end
 end
 
@@ -342,8 +353,17 @@ function _M.log_usage()
     local dict = ngx.shared.llm_stats
     if not dict then return end
 
+    -- Stats are keyed per model AND per backend that actually served the
+    -- request (set by route()), so a virtual model split across backends
+    -- (e.g. qwen36-27b -> proart/strix) shows separate rows. Legacy
+    -- single-"backend" models have no backend name -> keyed by model alone.
+    local backend = ngx.ctx.backend_name
+    local label = model
+    if backend and backend ~= "" then label = model .. "@" .. backend end
+    local base = key_name .. "|" .. label
+
     -- Always count the request
-    dict:incr("req|" .. key_name .. "|" .. model, 1, 0)
+    dict:incr("req|" .. base, 1, 0)
 
     -- Extract token usage from response
     local chunk = ngx.ctx.usage_chunk
@@ -356,39 +376,48 @@ function _M.log_usage()
     if not usage then return end
 
     if usage.prompt_tokens then
-        dict:incr("pt|" .. key_name .. "|" .. model, usage.prompt_tokens, 0)
+        dict:incr("pt|" .. base, usage.prompt_tokens, 0)
     end
     if usage.completion_tokens then
-        dict:incr("ct|" .. key_name .. "|" .. model, usage.completion_tokens, 0)
+        dict:incr("ct|" .. base, usage.completion_tokens, 0)
     end
 
-    -- Extract token speed: prefer llama.cpp timings, fall back to elapsed time
+    -- ── Token-weighted speed: accumulate Σtokens and Σtime, report Σtok/Σtime
+    -- (NOT a mean of per-request rates — that's dominated by tiny generations
+    -- where predicted_ms→0 blows the rate to millions). Time source priority:
+    --   1. llama.cpp timings.predicted_ms / prompt_ms  (exact, excludes queue)
+    --   2. stream first→last-chunk wall time            (vLLM / streamed)
+    --   3. skip — never fall back to request_time (it includes prompt+queue)
+    local gen_time, gen_tok, prm_time, prm_tok
     local timings_json = chunk:match('"timings"%s*:%s*(%b{})')
-    local pps, cps
-
     if timings_json then
-        local timings = cjson.decode(timings_json)
-        if timings then
-            pps = timings.prompt_per_second
-            cps = timings.predicted_per_second
+        local t = cjson.decode(timings_json)
+        if t then
+            if t.predicted_ms and t.predicted_ms > 0 then
+                gen_time = t.predicted_ms / 1000
+                gen_tok = t.predicted_n or usage.completion_tokens
+            end
+            if t.prompt_ms and t.prompt_ms > 0 then
+                prm_time = t.prompt_ms / 1000
+                prm_tok = t.prompt_n or usage.prompt_tokens
+            end
+        end
+    end
+    if not gen_time and ngx.ctx.is_stream and ngx.ctx.gen_first and ngx.ctx.gen_last then
+        local dt = ngx.ctx.gen_last - ngx.ctx.gen_first
+        if dt > 0 and usage.completion_tokens and usage.completion_tokens > 1 then
+            gen_time = dt
+            gen_tok = usage.completion_tokens
         end
     end
 
-    -- Fallback: compute from token counts and request duration
-    if not cps or cps <= 0 then
-        local elapsed = tonumber(ngx.var.request_time) or 0
-        if elapsed > 0 and usage.completion_tokens and usage.completion_tokens > 0 then
-            cps = usage.completion_tokens / elapsed
-        end
+    if gen_time and gen_tok and gen_tok > 0 then
+        dict:incr("gtok|" .. base, gen_tok, 0)
+        dict:incr("gtime|" .. base, gen_time, 0)
     end
-
-    if pps and pps > 0 then
-        dict:incr("pps_sum|" .. key_name .. "|" .. model, pps, 0)
-        dict:incr("pps_cnt|" .. key_name .. "|" .. model, 1, 0)
-    end
-    if cps and cps > 0 then
-        dict:incr("cps_sum|" .. key_name .. "|" .. model, cps, 0)
-        dict:incr("cps_cnt|" .. key_name .. "|" .. model, 1, 0)
+    if prm_time and prm_tok and prm_tok > 0 then
+        dict:incr("ptok|" .. base, prm_tok, 0)
+        dict:incr("ptime|" .. base, prm_time, 0)
     end
 end
 
@@ -417,17 +446,17 @@ function _M.load_stats()
             if s.completion_tokens and s.completion_tokens > 0 then
                 dict:set("ct|" .. key_name .. "|" .. model, s.completion_tokens)
             end
-            if s.pps_sum and s.pps_sum > 0 then
-                dict:set("pps_sum|" .. key_name .. "|" .. model, s.pps_sum)
+            if s.gtok and s.gtok > 0 then
+                dict:set("gtok|" .. key_name .. "|" .. model, s.gtok)
             end
-            if s.pps_cnt and s.pps_cnt > 0 then
-                dict:set("pps_cnt|" .. key_name .. "|" .. model, s.pps_cnt)
+            if s.gtime and s.gtime > 0 then
+                dict:set("gtime|" .. key_name .. "|" .. model, s.gtime)
             end
-            if s.cps_sum and s.cps_sum > 0 then
-                dict:set("cps_sum|" .. key_name .. "|" .. model, s.cps_sum)
+            if s.ptok and s.ptok > 0 then
+                dict:set("ptok|" .. key_name .. "|" .. model, s.ptok)
             end
-            if s.cps_cnt and s.cps_cnt > 0 then
-                dict:set("cps_cnt|" .. key_name .. "|" .. model, s.cps_cnt)
+            if s.ptime and s.ptime > 0 then
+                dict:set("ptime|" .. key_name .. "|" .. model, s.ptime)
             end
         end
     end
@@ -465,7 +494,7 @@ function _M.collect_stats(dict)
             if not stats[key_name][model] then
                 stats[key_name][model] = {
                     requests = 0, prompt_tokens = 0, completion_tokens = 0,
-                    pps_sum = 0, pps_cnt = 0, cps_sum = 0, cps_cnt = 0
+                    gtok = 0, gtime = 0, ptok = 0, ptime = 0
                 }
             end
             local val = dict:get(k) or 0
@@ -473,10 +502,10 @@ function _M.collect_stats(dict)
             if prefix == "req" then s.requests = val
             elseif prefix == "pt" then s.prompt_tokens = val
             elseif prefix == "ct" then s.completion_tokens = val
-            elseif prefix == "pps_sum" then s.pps_sum = val
-            elseif prefix == "pps_cnt" then s.pps_cnt = val
-            elseif prefix == "cps_sum" then s.cps_sum = val
-            elseif prefix == "cps_cnt" then s.cps_cnt = val
+            elseif prefix == "gtok" then s.gtok = val
+            elseif prefix == "gtime" then s.gtime = val
+            elseif prefix == "ptok" then s.ptok = val
+            elseif prefix == "ptime" then s.ptime = val
             end
         end
     end
@@ -878,8 +907,9 @@ function _M.admin_api_stats()
     for _, models in pairs(stats) do
         for _, s in pairs(models) do
             s.total_tokens = s.prompt_tokens + s.completion_tokens
-            s.avg_prompt_speed = s.pps_cnt > 0 and (s.pps_sum / s.pps_cnt) or 0
-            s.avg_completion_speed = s.cps_cnt > 0 and (s.cps_sum / s.cps_cnt) or 0
+            -- Token-weighted: total tokens / total time (0 = no measurable samples yet)
+            s.avg_prompt_speed = (s.ptime and s.ptime > 0) and (s.ptok / s.ptime) or 0
+            s.avg_completion_speed = (s.gtime and s.gtime > 0) and (s.gtok / s.gtime) or 0
         end
     end
 
