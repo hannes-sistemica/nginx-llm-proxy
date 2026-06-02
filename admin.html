@@ -921,6 +921,7 @@ $(function() {
                 '<th style="text-align:right">Total</th>' +
                 '<th style="text-align:right">Prompt tok/s</th>' +
                 '<th style="text-align:right">Gen tok/s</th>' +
+                '<th style="text-align:right">TTFT ms</th>' +
                 '</tr></thead>'
             );
 
@@ -936,6 +937,7 @@ $(function() {
                 totals.total_tokens += s.total_tokens;
                 var pSpeed = s.avg_prompt_speed > 0 ? Math.round(s.avg_prompt_speed) : '-';
                 var cSpeed = s.avg_completion_speed > 0 ? Math.round(s.avg_completion_speed) : '-';
+                var ttft = s.avg_ttft_ms > 0 ? Math.round(s.avg_ttft_ms) : '-';
                 $tbody.append(
                     '<tr>' +
                     '<td>' + model + '</td>' +
@@ -945,6 +947,7 @@ $(function() {
                     '<td class="num">' + fmt(s.total_tokens) + '</td>' +
                     '<td class="num">' + pSpeed + '</td>' +
                     '<td class="num">' + cSpeed + '</td>' +
+                    '<td class="num">' + ttft + '</td>' +
                     '</tr>'
                 );
             });
@@ -957,6 +960,7 @@ $(function() {
                     '<td class="num">' + fmt(totals.prompt_tokens) + '</td>' +
                     '<td class="num">' + fmt(totals.completion_tokens) + '</td>' +
                     '<td class="num">' + fmt(totals.total_tokens) + '</td>' +
+                    '<td class="num"></td>' +
                     '<td class="num"></td>' +
                     '<td class="num"></td>' +
                     '</tr>'

@@ -501,6 +501,17 @@ function _M.log_usage()
         dict:incr("ptok|" .. base, prm_tok, 0)
         dict:incr("ptime|" .. base, prm_time, 0)
     end
+
+    -- Time-to-first-token (streamed only): request start → first output chunk.
+    -- This is where prefix-cache hits show up — a warm prefix skips prefill so
+    -- TTFT drops sharply. Decode tok/s above can't see this.
+    if ngx.ctx.is_stream and ngx.ctx.gen_first then
+        local ttft = ngx.ctx.gen_first - ngx.req.start_time()
+        if ttft > 0 then
+            dict:incr("ttftsum|" .. base, ttft, 0)
+            dict:incr("ttftcnt|" .. base, 1, 0)
+        end
+    end
 end
 
 -- ── Stats persistence ────────────────────────────
@@ -540,6 +551,12 @@ function _M.load_stats()
             if s.ptime and s.ptime > 0 then
                 dict:set("ptime|" .. key_name .. "|" .. model, s.ptime)
             end
+            if s.ttftsum and s.ttftsum > 0 then
+                dict:set("ttftsum|" .. key_name .. "|" .. model, s.ttftsum)
+            end
+            if s.ttftcnt and s.ttftcnt > 0 then
+                dict:set("ttftcnt|" .. key_name .. "|" .. model, s.ttftcnt)
+            end
         end
     end
 
@@ -576,7 +593,7 @@ function _M.collect_stats(dict)
             if not stats[key_name][model] then
                 stats[key_name][model] = {
                     requests = 0, prompt_tokens = 0, completion_tokens = 0,
-                    gtok = 0, gtime = 0, ptok = 0, ptime = 0
+                    gtok = 0, gtime = 0, ptok = 0, ptime = 0, ttftsum = 0, ttftcnt = 0
                 }
             end
             local val = dict:get(k) or 0
@@ -588,6 +605,8 @@ function _M.collect_stats(dict)
             elseif prefix == "gtime" then s.gtime = val
             elseif prefix == "ptok" then s.ptok = val
             elseif prefix == "ptime" then s.ptime = val
+            elseif prefix == "ttftsum" then s.ttftsum = val
+            elseif prefix == "ttftcnt" then s.ttftcnt = val
             end
         end
     end
@@ -992,6 +1011,8 @@ function _M.admin_api_stats()
             -- Token-weighted: total tokens / total time (0 = no measurable samples yet)
             s.avg_prompt_speed = (s.ptime and s.ptime > 0) and (s.ptok / s.ptime) or 0
             s.avg_completion_speed = (s.gtime and s.gtime > 0) and (s.gtok / s.gtime) or 0
+            -- Mean time-to-first-token in ms (streamed requests) — shows prefix-cache benefit
+            s.avg_ttft_ms = (s.ttftcnt and s.ttftcnt > 0) and (s.ttftsum / s.ttftcnt * 1000) or 0
         end
     end
 
