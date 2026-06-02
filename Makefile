@@ -1,4 +1,4 @@
-.PHONY: test install uninstall reload status help deploy deploy-nginx diff
+.PHONY: test install uninstall reload status help deploy deploy-nginx diff smoke ship
 
 # Local deploy config (host + secrets); see .deploy.env.example. Not committed.
 -include .deploy.env
@@ -13,6 +13,7 @@ SSH         ?= ssh -o ConnectTimeout=8
 SCP         ?= scp -q -o ConnectTimeout=8
 APP_FILES   = llm-proxy.lua admin.html config.example.json README.md test.sh test-backend.py
 RELOAD_WAIT ?= 30
+API_KEY     ?= sk-1234
 # Reload only once in-flight requests drain to 0 (waits up to RELOAD_WAIT s).
 SAFE_RELOAD = DEPLOY_HOST="$(DEPLOY_HOST)" PROXY_URL="$(PROXY_URL)" ADMIN_PASSWORD="$(ADMIN_PASSWORD)" RELOAD_WAIT="$(RELOAD_WAIT)" bash bin/safe-reload.sh
 
@@ -68,6 +69,11 @@ diff: ## Show drift between workdir and the live host (app files + nginx.conf)
 
 reload: ## Reload nginx on the host (waits for in-flight to drain to 0)
 	@$(SAFE_RELOAD)
+
+smoke: ## Validate every model (no max_tokens, empty=FAIL); exits non-zero on any failure
+	@PROXY_URL="$(PROXY_URL)" ADMIN_PASSWORD="$(ADMIN_PASSWORD)" API_KEY="$(API_KEY)" node bin/smoke.js
+
+ship: deploy smoke ## Deploy then run the smoke gate (fails the deploy if any model is broken)
 
 status: ## Show host health + registered models
 	@echo "Health:"; curl -s $(PROXY_URL)/health; echo
